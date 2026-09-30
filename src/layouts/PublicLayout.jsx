@@ -83,19 +83,7 @@ export default function PublicLayout() {
             <span>YOUR STAY</span>
             <Link to="/search">Find a room</Link>
             <Link to={session ? accountPath : '/login'}>{session ? 'My account' : 'Sign in'}</Link>
-            {session ? (
-              <button
-                onClick={() => {
-                  setSession(null);
-                  navigate('/');
-                }}
-              >
-                <LogOut size={13} />
-                Sign out
-              </button>
-            ) : (
-              <Link to="/signup">Create an account</Link>
-            )}
+            {!session && <Link to="/signup">Create an account</Link>}
           </div>
           <div className="footer-note">
             <span>SORSOGON CITY</span>
