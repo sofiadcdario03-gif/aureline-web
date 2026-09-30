@@ -56,6 +56,9 @@
   height: 1px;
   background: #b8a47a;
 }
+.hotel-nav-signout {
+  display: none;
+}
 .hotel-header-actions {
   display: flex;
   align-items: center;
@@ -1264,6 +1267,17 @@
   .hotel-nav a.active::after {
     bottom: 6px;
     width: 40px;
+  }
+  .hotel-nav-signout {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #6f815f;
+    font-size: 13px;
+    padding: 14px 0;
+    border-top: 1px solid #e2e8d8;
+    margin-top: 8px;
+    width: 100%;
   }
   .hotel-menu {
     display: flex;

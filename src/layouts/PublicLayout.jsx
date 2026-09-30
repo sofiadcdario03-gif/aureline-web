@@ -29,6 +29,18 @@ export default function PublicLayout() {
               {label}
             </NavLink>
           ))}
+          {session && (
+            <button
+              className="hotel-nav-signout"
+              onClick={() => {
+                setSession(null);
+                navigate('/');
+              }}
+            >
+              <LogOut size={14} />
+              Sign out
+            </button>
+          )}
         </nav>
         <div className="hotel-header-actions">
           <Link className="hotel-account-link" to={session ? accountPath : '/login'}>
