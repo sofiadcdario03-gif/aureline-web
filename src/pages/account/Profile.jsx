@@ -224,7 +224,7 @@ export default function Profile(c) {
               <strong>{c.role}</strong>
             </div>
           </div>
-          <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #eee' }}>
+          <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
               <input
                 type="checkbox"
@@ -246,16 +246,16 @@ export default function Profile(c) {
               />
               <span>Enable two-factor authentication</span>
             </label>
+            {g && (
+              <button
+                className="button primary"
+                onClick={() => c.setModal({ type: 'guestForm', item: g })}
+              >
+                <Pencil size={16} />
+                Edit profile
+              </button>
+            )}
           </div>
-          {g && (
-            <button
-              className="button primary"
-              onClick={() => c.setModal({ type: 'guestForm', item: g })}
-            >
-              <Pencil size={16} />
-              Edit profile
-            </button>
-          )}
           <p className="info-note">
             <LockKeyhole size={15} />
             Change your password below to keep your account secure.

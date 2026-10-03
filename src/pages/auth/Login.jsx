@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRight, LockKeyhole } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { useHotel } from '../../context/HotelContext';
 import AuthLayout from '../../layouts/AuthLayout';
 import Field from '../../components/ui/Field';
@@ -106,9 +106,10 @@ export default function Login() {
             {error}
           </p>
         )}
-        <p className="auth-role-note">
-          <LockKeyhole size={14} />
-          One sign-in for guests, staff, and administrators.
+        <p className="login-switch" style={{ textAlign: 'right' }}>
+          <Link to="/forgot-password">
+            Forgot password?
+          </Link>
         </p>
         <button className="button primary full-width" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}

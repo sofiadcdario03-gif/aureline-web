@@ -481,6 +481,153 @@ app.put('/api/staff/:id/password', async (req, res) => {
   }
 });
 
+// Generate reset token
+function generateResetToken() {
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+}
+
+// Store reset tokens with expiration
+const resetTokenStore = new Map();
+
+function storeResetToken(email, token) {
+  const expiresAt = Date.now() + 30 * 60 * 1000; // 30 minutes
+  resetTokenStore.set(token, { email, expiresAt });
+}
+
+function verifyResetToken(token) {
+  const stored = resetTokenStore.get(token);
+  if (!stored) return null;
+  if (Date.now() > stored.expiresAt) {
+    resetTokenStore.delete(token);
+    return null;
+  }
+  return stored.email;
+}
+
+// Send reset password email
+async function sendResetEmail(email, token) {
+  try {
+    const resetLink = `http://localhost:5173/reset-password?token=${token}`;
+    const mailOptions = {
+      from: `"Aureline Hotel No-Reply" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: 'Aureline Hotel - Password Reset',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #333;">Password Reset Request</h2>
+          <p>You requested a password reset for your Aureline Hotel account.</p>
+          <p>Click the link below to reset your password:</p>
+          <div style="background: #f5f5f5; padding: 20px; border-radius: 5px; margin: 20px 0; text-align: center;">
+            <a href="${resetLink}" style="background: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">Reset Password</a>
+          </div>
+          <p>Or copy and paste this link into your browser:</p>
+          <p style="word-break: break-all; color: #666; font-size: 12px;">${resetLink}</p>
+          <p>This link will expire in 30 minutes.</p>
+          <p>If you didn't request this password reset, please ignore this email.</p>
+          <p style="margin-top: 30px; color: #666;">Best regards,<br>Aureline Hotel Team</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`Reset email sent to ${email}`);
+    return true;
+  } catch (error) {
+    console.error('Error sending reset email:', error);
+    return false;
+  }
+}
+
+// Reset password
+app.post('/api/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' });
+    }
+    
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    
+    // Verify token
+    const email = verifyResetToken(token);
+    if (!email) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+    
+    // Hash new password
+    const salt = generateSalt();
+    const digest = await hashPassword(password, salt);
+    
+    // Update guest password if exists
+    const guest = await db.collection('guests').findOne({ email });
+    if (guest) {
+      await db.collection('accounts').updateOne(
+        { guestId: guest.id },
+        { $set: { salt, digest } }
+      );
+    }
+    
+    // Update staff password if exists
+    const staff = await db.collection('staff').findOne({ email });
+    if (staff) {
+      await db.collection('staff').updateOne(
+        { email },
+        { $set: { salt, digest } }
+      );
+    }
+    
+    // Delete used token
+    resetTokenStore.delete(token);
+    
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// Forgot password - send reset email
+app.post('/api/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    const normalizedEmail = email.toLowerCase();
+    
+    // Check in guests collection
+    const guest = await db.collection('guests').findOne({ email: normalizedEmail });
+    
+    // Check in staff collection
+    const staff = await db.collection('staff').findOne({ email: normalizedEmail });
+    
+    if (!guest && !staff) {
+      return res.status(404).json({ error: 'No account found with this email address.' });
+    }
+    
+    // Generate and store reset token
+    const token = generateResetToken();
+    storeResetToken(normalizedEmail, token);
+    
+    // Send reset email
+    const emailSent = await sendResetEmail(normalizedEmail, token);
+    
+    if (emailSent) {
+      res.json({ message: 'Password reset email sent successfully' });
+    } else {
+      res.status(500).json({ error: 'Failed to send reset email' });
+    }
+  } catch (error) {
+    console.error('Error in forgot password:', error);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
 // Send OTP
 app.post('/api/otp/send', async (req, res) => {
   try {

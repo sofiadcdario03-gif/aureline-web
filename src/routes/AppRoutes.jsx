@@ -12,6 +12,8 @@ import Contact from '../pages/public/Contact';
 import RoomSearch from '../pages/public/RoomSearch';
 import Login from '../pages/auth/Login';
 import SignUp from '../pages/auth/SignUp';
+import ForgotPassword from '../pages/auth/ForgotPassword';
+import ResetPassword from '../pages/auth/ResetPassword';
 import GuestStays from '../pages/account/GuestStays';
 import Profile from '../pages/account/Profile';
 import Dashboard from '../pages/workspace/Dashboard';
@@ -42,6 +44,8 @@ export default function AppRoutes() {
       </Route>
       <Route path="login" element={<Login />} />
       <Route path="signup" element={<SignUp />} />
+      <Route path="forgot-password" element={<ForgotPassword />} />
+      <Route path="reset-password" element={<ResetPassword />} />
       <Route element={employee ? <WorkspaceLayout /> : <PublicLayout />}>
         <Route path="search" element={<RoomSearch {...hotel} />} />
         <Route element={<ProtectedRoute />}>
