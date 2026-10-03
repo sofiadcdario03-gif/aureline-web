@@ -140,6 +140,7 @@ export default function WorkspaceHeader({ title, menu, setMenu }) {
             <div className="popover">
               <div className="popover-label">YOUR ACCOUNT</div>
               <button
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-start' }}
                 onClick={() => {
                   navigate('/');
                   setProfileMenu(false);
@@ -149,6 +150,7 @@ export default function WorkspaceHeader({ title, menu, setMenu }) {
                 Hotel website
               </button>
               <button
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-start' }}
                 onClick={() => {
                   navigate('/profile');
                   setProfileMenu(false);
@@ -158,6 +160,7 @@ export default function WorkspaceHeader({ title, menu, setMenu }) {
                 My profile
               </button>
               <button
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-start' }}
                 onClick={() => {
                   setSession(null);
                   setProfileMenu(false);

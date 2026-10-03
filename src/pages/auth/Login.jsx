@@ -6,15 +6,17 @@ import AuthLayout from '../../layouts/AuthLayout';
 import Field from '../../components/ui/Field';
 import PasswordField from '../../components/forms/PasswordField';
 import { ACCESS_PASSWORD, signInAccount, destinationAfterLogin } from '../../services/authService';
+import axios from 'axios';
 
 export default function Login() {
-  const { session, setSession, guests, staff, accounts } = useHotel();
+  const { session, setSession, guests, staff, accounts, setModal } = useHotel();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pendingAccount, setPendingAccount] = useState(null);
   const redirect = params.get('redirect');
   if (session) return <Navigate to={destinationAfterLogin(session.role, redirect)} replace />;
 
@@ -24,8 +26,33 @@ export default function Login() {
     setBusy(true);
     try {
       const account = await signInAccount({ email, password, guests, staff, accounts });
-      setSession(account);
-      navigate(destinationAfterLogin(account.role, redirect), { replace: true });
+      
+      // Check if user has 2FA enabled
+      const user = account.guestId 
+        ? guests.find((g) => g.id === account.guestId)
+        : staff.find((s) => s.id === account.staffId);
+      
+      const twoFactorEnabled = user?.twoFactorEnabled || false;
+      
+      if (twoFactorEnabled) {
+        // Store pending account for after OTP verification
+        setPendingAccount(account);
+        
+        // Show OTP modal (it will send the OTP on mount)
+        setModal({
+          type: 'otp',
+          email: email.toLowerCase(),
+          purpose: 'Login Verification',
+          onVerified: () => {
+            setSession(account);
+            navigate(destinationAfterLogin(account.role, redirect), { replace: true });
+          },
+        });
+      } else {
+        // No 2FA, log in directly
+        setSession(account);
+        navigate(destinationAfterLogin(account.role, redirect), { replace: true });
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -56,13 +83,21 @@ export default function Login() {
           autoComplete="username"
           placeholder="you@example.com"
           required
+          maxLength={254}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === ' ') {
+              e.preventDefault();
+            }
+          }}
         />
         <PasswordField
           name="password"
           autoComplete="current-password"
           placeholder="Enter your password"
+          showStrength={false}
+          maxLength={64}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />

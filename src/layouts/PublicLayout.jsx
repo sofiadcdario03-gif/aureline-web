@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowUpRight, Menu, X, UserRound, LogOut } from 'lucide-react';
+import { ArrowUpRight, Menu, X, UserRound, LogOut, ChevronDown } from 'lucide-react';
 import Brand from '../components/ui/Brand';
 import { useHotel } from '../context/HotelContext';
 
@@ -9,7 +9,9 @@ export default function PublicLayout() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [profileMenu, setProfileMenu] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => setProfileMenu(false), [pathname]);
   const accountPath = session?.role === 'Guest' ? '/my-stays' : '/dashboard';
   return (
     <div className="public-site">
@@ -29,24 +31,51 @@ export default function PublicLayout() {
               {label}
             </NavLink>
           ))}
-          {session && (
-            <button
-              className="hotel-nav-signout"
-              onClick={() => {
-                setSession(null);
-                navigate('/');
-              }}
-            >
-              <LogOut size={14} />
-              Sign out
-            </button>
-          )}
         </nav>
         <div className="hotel-header-actions">
-          <Link className="hotel-account-link" to={session ? accountPath : '/login'}>
-            <UserRound size={17} />
-            <span>{session ? session.name.split(' ')[0] : 'Sign in'}</span>
-          </Link>
+          {session ? (
+            <div className="popover-wrap">
+              <button
+                className="hotel-account-link"
+                onClick={() => {
+                  setProfileMenu(!profileMenu);
+                  setOpen(false);
+                }}
+              >
+                <UserRound size={17} />
+                <span>{session.name.split(' ')[0]}</span>
+                <ChevronDown size={14} />
+              </button>
+              {profileMenu && (
+                <div className="popover">
+                  <button
+                    onClick={() => {
+                      navigate(accountPath);
+                      setProfileMenu(false);
+                    }}
+                  >
+                    My account
+                  </button>
+                  <button
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-start' }}
+                    onClick={() => {
+                      setSession(null);
+                      setProfileMenu(false);
+                      navigate('/');
+                    }}
+                  >
+                    <LogOut size={15} />
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <Link className="hotel-account-link" to="/login">
+              <UserRound size={17} />
+              <span>Sign in</span>
+            </Link>
+          )}
           <Link className="button primary hotel-book-button" to="/search">
             Book your stay <ArrowUpRight size={15} />
           </Link>

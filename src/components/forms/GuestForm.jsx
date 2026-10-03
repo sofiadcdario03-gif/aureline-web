@@ -6,10 +6,101 @@ import Modal from '../ui/Modal.jsx';
 
 export default function GuestForm({ item, onClose, ...c }) {
   const [data, setData] = useState(
-    item || { firstName: '', lastName: '', email: '', phone: '', address: '', passport: '' },
+    item || { firstName: '', lastName: '', email: '', phone: '+63 9', address: '', passport: '' },
   );
+  const [fieldErrors, setFieldErrors] = useState({});
+
+  const validateField = (key, value) => {
+    let error = '';
+    switch (key) {
+      case 'firstName':
+      case 'lastName':
+        if (value.length > 0 && value.length < 2) {
+          error = 'Minimum 2 characters';
+        }
+        break;
+      case 'email':
+        if (value.length > 0 && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+          error = 'Invalid email format';
+        } else if (value.length > 0 && value.length < 5) {
+          error = 'Minimum 5 characters';
+        }
+        break;
+      case 'address':
+        if (value.length > 0 && value.length < 10) {
+          error = 'Minimum 10 characters';
+        }
+        break;
+      case 'passport':
+        if (value.length > 0 && value.length < 5) {
+          error = 'Minimum 5 characters';
+        }
+        break;
+    }
+    setFieldErrors({ ...fieldErrors, [key]: error });
+    return error;
+  };
+
+  const handleChange = (key) => (e) => {
+    let value = e.target.value;
+    
+    // Handle phone number formatting
+    if (key === 'phone') {
+      // If value is empty or just the prefix, reset to prefix
+      if (!value || value === '+63 9' || value === '+63') {
+        value = '+63 9';
+      } else {
+        // Extract digits from the value
+        const digits = value.replace(/\D/g, '');
+        // Remove the 639 prefix if present to get the actual phone digits
+        const phoneDigits = digits.startsWith('639') ? digits.slice(3) : digits;
+        // Reconstruct with prefix, limiting to 9 digits
+        value = '+63 9' + phoneDigits.slice(0, 9);
+      }
+    }
+    
+    // Prevent invalid characters and limit length for first/last name
+    if (key === 'firstName' || key === 'lastName') {
+      value = value.replace(/[^a-zA-Z\s\-']/g, '').slice(0, 50);
+    }
+    
+    // Limit email to 254 characters
+    if (key === 'email') {
+      value = value.slice(0, 254);
+    }
+    
+    // Prevent invalid characters and limit length for address
+    if (key === 'address') {
+      value = value.replace(/[^a-zA-Z0-9\s#\-']/g, '').slice(0, 200);
+    }
+    
+    // Prevent invalid characters and limit length for passport
+    if (key === 'passport') {
+      value = value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
+    }
+    
+    setData({ ...data, [key]: value });
+    validateField(key, value);
+  };
+
   const submit = (e) => {
     e.preventDefault();
+    
+    // Validate all fields
+    const validations = {
+      firstName: validateField('firstName', data.firstName),
+      lastName: validateField('lastName', data.lastName),
+      email: validateField('email', data.email),
+      phone: validateField('phone', data.phone),
+      address: validateField('address', data.address),
+      passport: validateField('passport', data.passport),
+    };
+    
+    const hasErrors = Object.values(validations).some(err => err !== '');
+    if (hasErrors) {
+      return c.notify('Please fix the validation errors before submitting.');
+    }
+    
     if (
       [...c.guests, ...c.staff].some(
         (g) =>
@@ -17,7 +108,7 @@ export default function GuestForm({ item, onClose, ...c }) {
       )
     )
       return c.notify('This email is already registered.');
-    const saved = { ...data, email: data.email.trim().toLowerCase(), id: item?.id || uid('G') };
+    const saved = { ...data, email: data.email.trim().toLowerCase(), id: item?.id || uid('G'), twoFactorEnabled: item?.twoFactorEnabled || false };
     c.setGuests(item ? c.guests.map((g) => (g.id === item.id ? saved : g)) : [...c.guests, saved]);
     if (c.isGuest) c.setSession({ ...c.session, name: fullName(saved) });
     onClose();
@@ -39,14 +130,16 @@ export default function GuestForm({ item, onClose, ...c }) {
             ['address', 'Address'],
             ['passport', 'ID / passport number'],
           ].map(([key, label]) => (
-            <Field
-              key={key}
-              label={label}
-              required
-              type={key === 'email' ? 'email' : key === 'phone' ? 'tel' : 'text'}
-              value={data[key]}
-              onChange={(e) => setData({ ...data, [key]: e.target.value })}
-            />
+            <div key={key}>
+              <Field
+                label={label}
+                required
+                type={key === 'email' ? 'email' : key === 'phone' ? 'tel' : 'text'}
+                value={data[key]}
+                onChange={handleChange(key)}
+              />
+              {fieldErrors[key] && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors[key]}</p>}
+            </div>
           ))}
         </div>
         <div className="modal-actions">

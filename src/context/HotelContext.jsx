@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import {
   day,
   nights,
@@ -39,6 +40,66 @@ export function HotelProvider({ children }) {
       return () => clearTimeout(timer);
     }
   }, [toast]);
+
+  // Load guests from MongoDB on mount
+  useEffect(() => {
+    const loadGuests = async () => {
+      try {
+        const response = await axios.get('http://localhost:5000/api/guests');
+        if (response.data && response.data.length > 0) {
+          setGuests(response.data);
+        }
+      } catch (error) {
+        console.error('Error loading guests from database:', error);
+        // Fall back to initial guests if API fails
+      }
+    };
+    loadGuests();
+  }, []);
+
+  // Load staff from MongoDB on mount
+  useEffect(() => {
+    const loadStaff = async () => {
+      try {
+        const response = await axios.get('http://localhost:5000/api/staff');
+        if (response.data && response.data.length > 0) {
+          setStaff(response.data);
+        }
+      } catch (error) {
+        console.error('Error loading staff from database:', error);
+        // Fall back to initial staff if API fails
+      }
+    };
+    loadStaff();
+  }, []);
+
+  // Function to reload staff from database
+  const reloadStaff = async () => {
+    try {
+      const response = await axios.get('http://localhost:5000/api/staff');
+      if (response.data) {
+        setStaff(response.data);
+      }
+    } catch (error) {
+      console.error('Error reloading staff from database:', error);
+    }
+  };
+
+  // Load accounts from MongoDB on mount
+  useEffect(() => {
+    const loadAccounts = async () => {
+      try {
+        const response = await axios.get('http://localhost:5000/api/accounts');
+        if (response.data && response.data.length > 0) {
+          setAccounts(response.data);
+        }
+      } catch (error) {
+        console.error('Error loading accounts from database:', error);
+        // Fall back to initial accounts if API fails
+      }
+    };
+    loadAccounts();
+  }, []);
   const guest = (id) => guests.find((g) => g.id === id),
     room = (id) => rooms.find((r) => r.id === id),
     total = (b) => nights(b.checkIn, b.checkOut) * b.rate,
@@ -95,6 +156,7 @@ export function HotelProvider({ children }) {
     notify,
     updateStatus,
     navigate,
+    reloadStaff,
   };
 
   return <HotelContext.Provider value={ctx}>{children}</HotelContext.Provider>;

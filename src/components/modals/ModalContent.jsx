@@ -9,6 +9,7 @@ import RoomDetailsModal from './RoomDetailsModal';
 import GuestDetailsModal from './GuestDetailsModal';
 import BookingDetailsModal from './BookingDetailsModal';
 import CancelBookingModal from './CancelBookingModal';
+import OTPModal from './OTPModal';
 
 const modalComponents = {
   roomForm: RoomForm,
@@ -21,6 +22,7 @@ const modalComponents = {
   guest: GuestDetailsModal,
   booking: BookingDetailsModal,
   cancel: CancelBookingModal,
+  otp: OTPModal,
 };
 export default function ModalContent({ modal, onClose, ...hotel }) {
   if (modal.type === 'confirmDelete')
@@ -41,6 +43,15 @@ export default function ModalContent({ modal, onClose, ...hotel }) {
           </button>
         </div>
       </Modal>
+    );
+  if (modal.type === 'otp')
+    return (
+      <OTPModal
+        email={modal.email}
+        purpose={modal.purpose}
+        onVerified={modal.onVerified}
+        onClose={onClose}
+      />
     );
   const Component = modalComponents[modal.type];
   return Component ? (

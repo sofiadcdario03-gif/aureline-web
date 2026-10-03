@@ -28,8 +28,16 @@ export async function signInAccount({ email, password, guests, staff, accounts }
   const normalized = normalizeEmail(email);
   const employee = staff.find((person) => normalizeEmail(person.email) === normalized);
   if (employee) {
-    if (password !== (employee.password || ACCESS_PASSWORD) || employee.status !== 'Active')
-      throw new Error('The email or password is incorrect, or this account is inactive.');
+    // Check if employee has hashed password
+    if (employee.salt && employee.digest) {
+      const valid = (await passwordDigest(password, employee.salt)) === employee.digest;
+      if (!valid || employee.status !== 'Active')
+        throw new Error('The email or password is incorrect, or this account is inactive.');
+    } else {
+      // Fallback to plain text for old accounts or access password
+      if (password !== (employee.password || ACCESS_PASSWORD) || employee.status !== 'Active')
+        throw new Error('The email or password is incorrect, or this account is inactive.');
+    }
     return { name: employee.name, role: employee.role, staffId: employee.id };
   }
   const guest = guests.find((person) => normalizeEmail(person.email) === normalized);
