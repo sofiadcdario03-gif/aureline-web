@@ -46,8 +46,19 @@ export default function StaffForm({ item, onClose, ...c }) {
       ? { ...item }
       : { name: '', email: '', phone: '', role: 'Front Desk', status: 'Active', twoFactorEnabled: false },
   );
+  const [originalStatus, setOriginalStatus] = useState(item?.status || 'Active');
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState({});
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+
+  // Update original status when item changes
+  React.useEffect(() => {
+    if (item) {
+      setOriginalStatus(item.status);
+    }
+  }, [item]);
 
   const handleNameChange = (e) => {
     const value = e.target.value;
@@ -116,6 +127,16 @@ export default function StaffForm({ item, onClose, ...c }) {
     )
       return c.notify('An account already uses this email.');
 
+    // Check if status changed and require admin password verification
+    if (item && data.status !== originalStatus) {
+      setShowPasswordModal(true);
+      return;
+    }
+
+    proceedWithSave();
+  };
+
+  const proceedWithSave = async () => {
     setBusy(true);
     try {
       const saved = {
@@ -149,6 +170,35 @@ export default function StaffForm({ item, onClose, ...c }) {
       c.notify('Failed to save staff member. Please try again.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handlePasswordVerification = async () => {
+    setPasswordError('');
+    try {
+      // Verify admin password by calling the login endpoint
+      const adminStaff = c.staff.find(s => s.id === c.session.staffId);
+      if (!adminStaff) {
+        setPasswordError('Admin account not found');
+        return;
+      }
+
+      // Use the authentication service to verify password
+      const { signInAccount } = await import('../../services/authService.js');
+      await signInAccount({
+        email: adminStaff.email,
+        password: adminPassword,
+        guests: c.guests,
+        staff: c.staff,
+        accounts: c.accounts,
+      });
+      
+      // Password verified, proceed with save
+      setShowPasswordModal(false);
+      setAdminPassword('');
+      proceedWithSave();
+    } catch (error) {
+      setPasswordError('Invalid password');
     }
   };
 
@@ -212,19 +262,8 @@ export default function StaffForm({ item, onClose, ...c }) {
             </select>
           </Field>
         </div>
-        <div style={{ marginTop: '16px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={data.twoFactorEnabled}
-              onChange={(e) => setData({ ...data, twoFactorEnabled: e.target.checked })}
-              style={{ width: '18px', height: '18px' }}
-            />
-            <span>Enable two-factor authentication</span>
-          </label>
-        </div>
         <p className="info-note">
-          A staff ID is generated automatically. Phone numbers are formatted as +63 9XXXXXXXXX. A temporary password will be generated and sent to the staff member's email. Two-factor authentication adds an extra layer of security.
+          A staff ID is generated automatically. A temporary password will be generated and sent to the staff member's email.
         </p>
         <div className="modal-actions">
           {item && (
@@ -252,6 +291,75 @@ export default function StaffForm({ item, onClose, ...c }) {
           </button>
         </div>
       </form>
+      
+      {showPasswordModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '24px',
+            borderRadius: '8px',
+            maxWidth: '400px',
+            width: '90%',
+          }}>
+            <h3 style={{ marginBottom: '16px' }}>Verify Admin Password</h3>
+            <p style={{ marginBottom: '16px', color: '#666' }}>
+              Changing staff status requires admin verification. Please enter your password to continue.
+            </p>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: '500' }}>Password</label>
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === ' ') e.preventDefault();
+                }}
+                maxLength={64}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  border: '1px solid #ccc',
+                  borderRadius: '4px',
+                  fontSize: '14px',
+                }}
+              />
+            </div>
+            {passwordError && <p style={{ color: '#ff4d4f', fontSize: '12px', marginTop: '4px', marginBottom: '16px' }}>{passwordError}</p>}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setAdminPassword('');
+                  setPasswordError('');
+                  setData({ ...data, status: originalStatus });
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button primary"
+                onClick={handlePasswordVerification}
+              >
+                Verify
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
