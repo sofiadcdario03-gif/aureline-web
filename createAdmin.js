@@ -1,83 +1,47 @@
 import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { generateSalt, hashPassword } from './server/security.js';
 
 dotenv.config();
 
-const toHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-
-async function passwordDigest(password, salt) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 100000, hash: 'SHA-256' },
-    key,
-    256,
-  );
-  return toHex(new Uint8Array(bits));
+const { MONGO_URI, MONGODB_DB_NAME, ADMIN_EMAIL, ADMIN_PASSWORD } = process.env;
+if (!MONGO_URI || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  throw new Error('Set MONGO_URI, ADMIN_EMAIL, and ADMIN_PASSWORD in the local environment.');
+}
+if (ADMIN_PASSWORD.length < 12 || ADMIN_PASSWORD.length > 128) {
+  throw new Error('ADMIN_PASSWORD must be between 12 and 128 characters.');
 }
 
-async function createDefaultAdmin() {
-  const uri = process.env.MONGO_URI;
-  const client = new MongoClient(uri);
+const client = new MongoClient(MONGO_URI);
 
-  try {
-    await client.connect();
-    console.log('Connected to MongoDB Atlas');
-    const db = client.db('hotel-management');
-
-    // Hash the password
-    const password = 'Aureline2026!';
-    const salt = toHex(crypto.getRandomValues(new Uint8Array(16)));
-    const digest = await passwordDigest(password, salt);
-
-    // Create admin staff account
-    const admin = {
-      id: 'ST-ADMIN',
-      name: 'Aureline Admin',
-      email: 'connect.aureline.admin@gmail.com',
-      phone: '+63 900 000 0000',
-      role: 'Admin',
-      status: 'Active',
-      twoFactorEnabled: false,
-      salt,
-      digest
-    };
-
-    // Check if admin already exists
-    const existingAdmin = await db.collection('staff').findOne({
-      email: admin.email.toLowerCase()
-    });
-
-    if (existingAdmin) {
-      console.log('Admin account already exists. Updating...');
-      await db.collection('staff').updateOne(
-        { email: admin.email.toLowerCase() },
-        { $set: admin, $unset: { password: '' } }
-      );
-      console.log('Admin account updated successfully');
-    } else {
-      const result = await db.collection('staff').insertOne(admin);
-      console.log('Default admin account created successfully');
-      console.log('Admin ID:', result.insertedId);
-    }
-
-    console.log('\nAdmin credentials:');
-    console.log('Email:', admin.email);
-    console.log('Password:', password);
-    console.log('Role:', admin.role);
-
-  } catch (error) {
-    console.error('Error creating admin:', error);
-  } finally {
-    await client.close();
-    console.log('\nMongoDB connection closed');
+try {
+  await client.connect();
+  const db = client.db(MONGODB_DB_NAME || 'hotel-management');
+  const staff = db.collection('staff');
+  const email = ADMIN_EMAIL.trim().toLowerCase();
+  const existing = await staff.findOne({ email });
+  if (existing) {
+    throw new Error('An account with ADMIN_EMAIL already exists. No account was changed.');
   }
-}
 
-createDefaultAdmin();
+  const salt = generateSalt();
+  const digest = hashPassword(ADMIN_PASSWORD, salt);
+  await staff.insertOne({
+    id: `ST-${crypto.randomUUID()}`,
+    name: 'Aureline Admin',
+    email,
+    phone: '',
+    role: 'Admin',
+    status: 'Active',
+    twoFactorEnabled: false,
+    salt,
+    digest,
+  });
+  console.log(`Administrator account created for ${email}.`);
+} catch (error) {
+  console.error('Administrator setup failed:', error.message);
+  process.exitCode = 1;
+} finally {
+  await client.close();
+}

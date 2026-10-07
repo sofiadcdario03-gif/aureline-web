@@ -6,6 +6,13 @@ A responsive hotel website and management frontend for Aureline Hotel in Sorsogo
 
 ```sh
 npm install
+npm run seed:rooms
+npm run server
+```
+
+In a second terminal:
+
+```sh
 npm run dev
 ```
 
@@ -17,6 +24,10 @@ npm run build         # Production build
 npm run format        # Format source, tests, and this guide
 npm run format:check  # Check formatting
 ```
+
+Copy `.env.example` to `.env` and set `MONGO_URI`, `JWT_SECRET`, and the email settings before starting the API. `MONGODB_DB_NAME` defaults to `hotel-management`. Use a unique random secret of at least 32 bytes for `JWT_SECRET`; the server only generates an ephemeral signing key for local development when it is unset. Production startup requires an explicit `JWT_SECRET`.
+
+`npm run seed:rooms` inserts the 24 sample rooms only when their IDs are absent; it does not overwrite existing room records and is safe to rerun. To create the first administrator, set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in the local `.env` and run `npm run create-admin`. The setup command refuses to overwrite an existing account and never prints the password. Existing browser-only room, guest, reservation, and payment data is not automatically imported into MongoDB; it is left untouched in the browser's prior `ah-*` localStorage keys.
 
 ## Structure
 
@@ -71,21 +82,13 @@ The homepage is the starting screen. Account role comes from the matched email a
 
 Search dates, guest count, and room type are kept in the URL, including the return through login/sign-up. Guest stays show only reservations associated with that guest's ID. The booking lifecycle, room/guest records, staff directory, payment recording, and printable receipts are available in the management workspace.
 
-## Sign-In Accounts
+## API and Reservations
 
-All seeded accounts use **`Aureline123!`**:
+The Express API uses MongoDB Atlas for rooms, guests, staff, credentials, reservations, and payment records. Passwords are PBKDF2-hashed on the server. Signed access tokens are required for protected APIs; Admin manages rooms and staff, Admin/Front Desk manage workspace records and reservations, and Guests may only view or cancel their own reservations. Room search is public.
 
-| Account    | Email                        |
-| ---------- | ---------------------------- |
-| Guest      | `isabella.reyes@example.com` |
-| Front Desk | `maria@aureline.hotel`       |
-| Admin      | `alex@aureline.hotel`        |
+Room status values are `Available`, `Maintenance`, and `Inactive`. Occupancy and availability are derived from active reservation records; overlapping stays are rejected using check-in/check-out dates, with checkout/check-in on the same date allowed. Reservation creation and edits use MongoDB transactions to serialize claims per room. Historical reservations remain stored when a room is archived.
 
-Open `/login`, expand **Sign-in access for Guest, Front Desk, and Admin**, choose an account, then submit the form. Newly registered guests can sign out and sign back in with their chosen password. Active staff added by Admin can use the shared access password above.
-
-## Notes For Backend Integration
-
-Replace `services/authService.js` with Express authentication endpoints, implement password hashing on the server, issue/verify JWTs, and enforce roles and record ownership on every protected API. Add MongoDB persistence, server-side input validation, atomic reservation/payment operations, password reset/change, and secure staff provisioning. Axios is installed for integration. Suggested resource routes: `/api/auth`, `/api/users`, `/api/rooms`, `/api/guests`, `/api/reservations`, `/api/payments`.
+API endpoints include `/api/auth/login`, `/api/auth/register`, `/api/rooms`, and `/api/reservations`, plus protected guest/staff/profile endpoints and the existing OTP/password-reset routes. The frontend talks only to Express; MongoDB credentials remain server-side.
 
 Reservation history is retained; linked guests/rooms cannot be deleted. Checkout requires payment settlement. Reservations block overlapping dates, and maintenance rooms cannot be reserved. Prices use PHP per night with no tax or service charge configured. Payment recording does not charge a card. Cancellation does not process refunds.
 

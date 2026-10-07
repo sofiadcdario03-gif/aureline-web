@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import axios from 'axios';
+import api from '../../services/api.js';
 import { uid } from '../../utils/formatters.js';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
@@ -9,7 +9,8 @@ import Modal from '../ui/Modal.jsx';
 const validateName = (name) => {
   if (!name || name.length < 2) return 'Name must be at least 2 characters';
   if (name.length > 50) return 'Name must be at most 50 characters';
-  if (!/^[a-zA-Z\-'\s]+$/.test(name)) return 'Name can only contain letters, hyphens, apostrophes, and spaces';
+  if (!/^[a-zA-Z\-'\s]+$/.test(name))
+    return 'Name can only contain letters, hyphens, apostrophes, and spaces';
   return null;
 };
 
@@ -44,7 +45,14 @@ export default function StaffForm({ item, onClose, ...c }) {
   const [data, setData] = useState(
     item
       ? { ...item }
-      : { name: '', email: '', phone: '', role: 'Front Desk', status: 'Active', twoFactorEnabled: false },
+      : {
+          name: '',
+          email: '',
+          phone: '',
+          role: 'Front Desk',
+          status: 'Active',
+          twoFactorEnabled: false,
+        },
   );
   const [originalStatus, setOriginalStatus] = useState(item?.status || 'Active');
   const [busy, setBusy] = useState(false);
@@ -67,10 +75,10 @@ export default function StaffForm({ item, onClose, ...c }) {
     // Limit to 50 characters
     const limited = filtered.slice(0, 50);
     setData({ ...data, name: limited });
-    
+
     // Live validation
     const error = validateName(limited);
-    setErrors(prev => ({ ...prev, name: error || null }));
+    setErrors((prev) => ({ ...prev, name: error || null }));
   };
 
   const handleEmailChange = (e) => {
@@ -78,10 +86,10 @@ export default function StaffForm({ item, onClose, ...c }) {
     // Limit to 254 characters
     const limited = value.slice(0, 254);
     setData({ ...data, email: limited });
-    
+
     // Live validation
     const error = validateEmail(limited);
-    setErrors(prev => ({ ...prev, email: error || null }));
+    setErrors((prev) => ({ ...prev, email: error || null }));
   };
 
   const handlePhoneChange = (e) => {
@@ -121,8 +129,7 @@ export default function StaffForm({ item, onClose, ...c }) {
     if (
       [...c.staff, ...c.guests].some(
         (s) =>
-          s.id !== item?.id &&
-          s.email.trim().toLowerCase() === data.email.trim().toLowerCase(),
+          s.id !== item?.id && s.email.trim().toLowerCase() === data.email.trim().toLowerCase(),
       )
     )
       return c.notify('An account already uses this email.');
@@ -146,25 +153,21 @@ export default function StaffForm({ item, onClose, ...c }) {
         id: item?.id || uid('ST'),
       };
 
-      // For editing, keep existing password hash
-      if (item) {
-        saved.salt = item.salt;
-        saved.digest = item.digest;
-      }
-
       // Save to database
       if (item) {
         // Update existing staff
-        await axios.put(`http://localhost:5000/api/staff/${item.id}`, saved);
+        await api.put(`/staff/${item.id}`, saved);
       } else {
         // Create new staff - backend will generate password and send email
-        await axios.post('http://localhost:5000/api/staff', saved);
+        await api.post('/staff', saved);
       }
 
       // Reload staff from database to ensure sync
       await c.reloadStaff();
       onClose();
-      c.notify(item ? 'Team directory updated.' : 'Staff account created. Credentials sent via email.');
+      c.notify(
+        item ? 'Team directory updated.' : 'Staff account created. Credentials sent via email.',
+      );
     } catch (error) {
       console.error('Error saving staff:', error);
       c.notify('Failed to save staff member. Please try again.');
@@ -176,23 +179,8 @@ export default function StaffForm({ item, onClose, ...c }) {
   const handlePasswordVerification = async () => {
     setPasswordError('');
     try {
-      // Verify admin password by calling the login endpoint
-      const adminStaff = c.staff.find(s => s.id === c.session.staffId);
-      if (!adminStaff) {
-        setPasswordError('Admin account not found');
-        return;
-      }
+      await api.post('/auth/verify-password', { currentPassword: adminPassword });
 
-      // Use the authentication service to verify password
-      const { signInAccount } = await import('../../services/authService.js');
-      await signInAccount({
-        email: adminStaff.email,
-        password: adminPassword,
-        guests: c.guests,
-        staff: c.staff,
-        accounts: c.accounts,
-      });
-      
       // Password verified, proceed with save
       setShowPasswordModal(false);
       setAdminPassword('');
@@ -205,7 +193,7 @@ export default function StaffForm({ item, onClose, ...c }) {
   const handleDelete = async () => {
     setBusy(true);
     try {
-      await axios.delete(`http://localhost:5000/api/staff/${item.id}`);
+      await api.delete(`/staff/${item.id}`);
       await c.reloadStaff();
       c.notify('Staff member deleted.');
       onClose();
@@ -224,12 +212,7 @@ export default function StaffForm({ item, onClose, ...c }) {
       onClose={onClose}
     >
       <form onSubmit={handleSubmit}>
-        <Field
-          label="Full name"
-          required
-          value={data.name}
-          onChange={handleNameChange}
-        />
+        <Field label="Full name" required value={data.name} onChange={handleNameChange} />
         {errors.name && <p className="form-error">{errors.name}</p>}
         <Field
           label="Email address"
@@ -263,7 +246,8 @@ export default function StaffForm({ item, onClose, ...c }) {
           </Field>
         </div>
         <p className="info-note">
-          A staff ID is generated automatically. A temporary password will be generated and sent to the staff member's email.
+          A staff ID is generated automatically. A temporary password will be generated and sent to
+          the staff member's email.
         </p>
         <div className="modal-actions">
           {item && (
@@ -291,33 +275,40 @@ export default function StaffForm({ item, onClose, ...c }) {
           </button>
         </div>
       </form>
-      
+
       {showPasswordModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '24px',
-            borderRadius: '8px',
-            maxWidth: '400px',
-            width: '90%',
-          }}>
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              padding: '24px',
+              borderRadius: '8px',
+              maxWidth: '400px',
+              width: '90%',
+            }}
+          >
             <h3 style={{ marginBottom: '16px' }}>Verify Admin Password</h3>
             <p style={{ marginBottom: '16px', color: '#666' }}>
-              Changing staff status requires admin verification. Please enter your password to continue.
+              Changing staff status requires admin verification. Please enter your password to
+              continue.
             </p>
             <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '4px', fontWeight: '500' }}>Password</label>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: '500' }}>
+                Password
+              </label>
               <input
                 type="password"
                 value={adminPassword}
@@ -335,8 +326,21 @@ export default function StaffForm({ item, onClose, ...c }) {
                 }}
               />
             </div>
-            {passwordError && <p style={{ color: '#ff4d4f', fontSize: '12px', marginTop: '4px', marginBottom: '16px' }}>{passwordError}</p>}
-            <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+            {passwordError && (
+              <p
+                style={{
+                  color: '#ff4d4f',
+                  fontSize: '12px',
+                  marginTop: '4px',
+                  marginBottom: '16px',
+                }}
+              >
+                {passwordError}
+              </p>
+            )}
+            <div
+              style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}
+            >
               <button
                 type="button"
                 className="button secondary"
@@ -349,11 +353,7 @@ export default function StaffForm({ item, onClose, ...c }) {
               >
                 Cancel
               </button>
-              <button
-                type="button"
-                className="button primary"
-                onClick={handlePasswordVerification}
-              >
+              <button type="button" className="button primary" onClick={handlePasswordVerification}>
                 Verify
               </button>
             </div>

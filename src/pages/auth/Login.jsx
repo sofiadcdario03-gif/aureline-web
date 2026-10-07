@@ -5,18 +5,17 @@ import { useHotel } from '../../context/HotelContext';
 import AuthLayout from '../../layouts/AuthLayout';
 import Field from '../../components/ui/Field';
 import PasswordField from '../../components/forms/PasswordField';
-import { ACCESS_PASSWORD, signInAccount, destinationAfterLogin } from '../../services/authService';
-import axios from 'axios';
+import { destinationAfterLogin, normalizeEmail } from '../../services/authService';
+import api from '../../services/api';
 
 export default function Login() {
-  const { session, setSession, guests, staff, accounts, setModal } = useHotel();
+  const { session, setSession, setModal } = useHotel();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [pendingAccount, setPendingAccount] = useState(null);
   const redirect = params.get('redirect');
   if (session) return <Navigate to={destinationAfterLogin(session.role, redirect)} replace />;
 
@@ -25,51 +24,34 @@ export default function Login() {
     setError('');
     setBusy(true);
     try {
-      const account = await signInAccount({ email, password, guests, staff, accounts });
-      
-      // Check if user has 2FA enabled
-      const user = account.guestId 
-        ? guests.find((g) => g.id === account.guestId)
-        : staff.find((s) => s.id === account.staffId);
-      
-      const twoFactorEnabled = user?.twoFactorEnabled || false;
-      
-      if (twoFactorEnabled) {
-        // Store pending account for after OTP verification
-        setPendingAccount(account);
-        
-        // Show OTP modal (it will send the OTP on mount)
+      const { data } = await api.post('/auth/login', {
+        email: normalizeEmail(email),
+        password,
+      });
+      if (data.requiresOtp) {
         setModal({
           type: 'otp',
-          email: email.toLowerCase(),
+          email: normalizeEmail(email),
           purpose: 'Login Verification',
-          onVerified: () => {
-            setSession(account);
-            navigate(destinationAfterLogin(account.role, redirect), { replace: true });
+          onVerified: (verified) => {
+            if (!verified?.token || !verified.user) {
+              setError('Sign-in verification expired. Please sign in again.');
+              return;
+            }
+            setSession({ ...verified.user, token: verified.token });
+            navigate(destinationAfterLogin(verified.user.role, redirect), { replace: true });
           },
         });
       } else {
-        // No 2FA, log in directly
-        setSession(account);
-        navigate(destinationAfterLogin(account.role, redirect), { replace: true });
+        setSession({ ...data.user, token: data.token });
+        navigate(destinationAfterLogin(data.user.role, redirect), { replace: true });
       }
     } catch (err) {
-      setError(err.message);
+      setError(err.response?.data?.error || 'Unable to sign in. Please try again.');
     } finally {
       setBusy(false);
     }
   }
-  const accessAccounts = [
-    { label: 'Guest', email: guests.find((g) => g.id === 'G-001')?.email },
-    {
-      label: 'Front desk',
-      email: staff.find((s) => s.role === 'Front Desk' && s.status === 'Active')?.email,
-    },
-    {
-      label: 'Admin',
-      email: staff.find((s) => s.role === 'Admin' && s.status === 'Active')?.email,
-    },
-  ];
   return (
     <AuthLayout>
       <div className="eyebrow">WELCOME TO AURELINE HOTEL</div>
@@ -107,9 +89,7 @@ export default function Login() {
           </p>
         )}
         <p className="login-switch" style={{ textAlign: 'right' }}>
-          <Link to="/forgot-password">
-            Forgot password?
-          </Link>
+          <Link to="/forgot-password">Forgot password?</Link>
         </p>
         <button className="button primary full-width" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
@@ -122,30 +102,6 @@ export default function Login() {
           Create a guest account
         </Link>
       </p>
-      <details className="access-accounts">
-        <summary>Sign-in access for Guest, Front Desk, and Admin</summary>
-        <p>
-          Select an account to fill the form. Password: <code>{ACCESS_PASSWORD}</code>
-        </p>
-        <div>
-          {accessAccounts
-            .filter((account) => account.email)
-            .map((account) => (
-              <button
-                type="button"
-                key={account.label}
-                onClick={() => {
-                  setEmail(account.email);
-                  setPassword(ACCESS_PASSWORD);
-                  setError('');
-                }}
-              >
-                {account.label}
-                <span>{account.email}</span>
-              </button>
-            ))}
-        </div>
-      </details>
     </AuthLayout>
   );
 }

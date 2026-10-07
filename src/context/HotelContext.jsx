@@ -1,15 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
-import {
-  day,
-  nights,
-  initialRooms,
-  initialGuests,
-  initialBookings,
-  initialPayments,
-  initialStaff,
-} from '../data';
+import api from '../services/api';
+import { day, nights } from '../data';
 import { getRoomStatus, isRoomAvailable } from '../reservationRules';
 import useSaved from '../hooks/useSaved';
 const HotelContext = createContext(null);
@@ -19,13 +11,12 @@ export function useHotel() {
   return value;
 }
 export function HotelProvider({ children }) {
-  const [rooms, setRooms] = useSaved('ah-rooms-v1', initialRooms),
-    [guests, setGuests] = useSaved('ah-guests-v1', initialGuests),
-    [bookings, setBookings] = useSaved('ah-bookings-v1', initialBookings),
-    [payments, setPayments] = useSaved('ah-payments-v1', initialPayments),
-    [staff, setStaff] = useSaved('ah-staff-v1', initialStaff);
+  const [rooms, setRooms] = useState([]),
+    [guests, setGuests] = useState([]),
+    [bookings, setBookings] = useState([]),
+    [payments, setPayments] = useState([]),
+    [staff, setStaff] = useState([]);
   const [session, setSession] = useSaved('ah-session-v2', null);
-  const [accounts, setAccounts] = useSaved('ah-accounts-v1', []);
   const [modal, setModal] = useState(null),
     [toast, setToast] = useState('');
   const navigate = useNavigate();
@@ -41,66 +32,94 @@ export function HotelProvider({ children }) {
     }
   }, [toast]);
 
-  // Load guests from MongoDB on mount
   useEffect(() => {
-    const loadGuests = async () => {
-      try {
-        const response = await axios.get('http://localhost:5000/api/guests');
-        if (response.data && response.data.length > 0) {
-          setGuests(response.data);
-        }
-      } catch (error) {
-        console.error('Error loading guests from database:', error);
-        // Fall back to initial guests if API fails
-      }
-    };
-    loadGuests();
+    api
+      .get('/rooms')
+      .then(({ data }) => setRooms(data))
+      .catch((error) => {
+        console.error('Error loading rooms from database:', error);
+        notify(error.response?.data?.error || 'Rooms could not be loaded from the server.');
+      });
   }, []);
 
-  // Load staff from MongoDB on mount
   useEffect(() => {
-    const loadStaff = async () => {
+    if (session && !session.token) setSession(null);
+    if (!session?.token) {
+      setGuests([]);
+      setStaff([]);
+      return;
+    }
+    if (session.role === 'Guest') {
+      let active = true;
+      api
+        .get('/profile')
+        .then(({ data }) => {
+          if (active) setGuests([data]);
+        })
+        .catch((error) => {
+          if (!active) return;
+          console.error('Error loading guest profile:', error);
+          notify(error.response?.data?.error || 'Guest profile could not be loaded.');
+        });
+      setStaff([]);
+      return () => {
+        active = false;
+      };
+    }
+    if (!['Admin', 'Front Desk'].includes(session.role)) return;
+    setGuests([]);
+    setStaff([]);
+    let active = true;
+    async function loadWorkspaceData() {
       try {
-        const response = await axios.get('http://localhost:5000/api/staff');
-        if (response.data && response.data.length > 0) {
-          setStaff(response.data);
+        const [guestResponse, staffResponse] = await Promise.all([
+          api.get('/guests'),
+          api.get('/staff'),
+        ]);
+        if (active) {
+          setGuests(guestResponse.data);
+          setStaff(staffResponse.data);
         }
       } catch (error) {
-        console.error('Error loading staff from database:', error);
-        // Fall back to initial staff if API fails
+        if (!active) return;
+        console.error('Error loading workspace accounts:', error);
+        notify(error.response?.data?.error || 'Workspace account data could not be loaded.');
       }
+    }
+    loadWorkspaceData();
+    return () => {
+      active = false;
     };
-    loadStaff();
-  }, []);
+  }, [session?.token, session?.role]);
 
-  // Function to reload staff from database
   const reloadStaff = async () => {
     try {
-      const response = await axios.get('http://localhost:5000/api/staff');
-      if (response.data) {
-        setStaff(response.data);
-      }
+      const { data } = await api.get('/staff');
+      setStaff(data);
     } catch (error) {
       console.error('Error reloading staff from database:', error);
+      throw error;
     }
   };
 
-  // Load accounts from MongoDB on mount
-  useEffect(() => {
-    const loadAccounts = async () => {
-      try {
-        const response = await axios.get('http://localhost:5000/api/accounts');
-        if (response.data && response.data.length > 0) {
-          setAccounts(response.data);
-        }
-      } catch (error) {
-        console.error('Error loading accounts from database:', error);
-        // Fall back to initial accounts if API fails
-      }
-    };
-    loadAccounts();
-  }, []);
-  const guest = (id) => guests.find((g) => g.id === id),
+  const reloadRooms = async () => {
+    const { data } = await api.get('/rooms');
+    setRooms(data);
+    return data;
+  };
+  const reloadBookings = async () => {
+    const { data } = await api.get('/reservations');
+    setBookings(data);
+    return data;
+  };
+  const reloadPayments = async () => {
+    const { data } = await api.get('/payments');
+    setPayments(data);
+    return data;
+  };
+  const guest = (id) =>
+      guests.find((g) => g.id === id) ||
+      (session?.guestId === id && session.profile ? { id, ...session.profile } : undefined),
     room = (id) => rooms.find((r) => r.id === id),
     total = (b) => nights(b.checkIn, b.checkOut) * b.rate,
     paid = (b) => payments.filter((p) => p.bookingId === b.id).reduce((s, p) => s + p.amount, 0),
@@ -111,7 +130,7 @@ export function HotelProvider({ children }) {
   const visibleBookings = isGuest
     ? bookings.filter((b) => b.guestId === session?.guestId)
     : bookings;
-  const updateStatus = (b, status) => {
+  const updateStatus = async (b, status) => {
     if (status === 'Checked-in' && (b.checkIn > day() || b.checkOut <= day()))
       return notify('Check-in is available during the reservation dates.');
     if (
@@ -120,10 +139,30 @@ export function HotelProvider({ children }) {
         bookings.some((x) => x.id !== b.id && x.roomId === b.roomId && x.status === 'Checked-in'))
     )
       return notify('This room is not ready for check-in. Reassign an available room.');
-    setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status } : x)));
-    setModal(null);
-    notify(`Reservation ${b.id} ${status.toLowerCase()}.`);
+    try {
+      const { data } = await api.patch(`/reservations/${b.id}/status`, { status });
+      setBookings((prev) => prev.map((x) => (x.id === b.id ? data : x)));
+      setModal(null);
+      notify(`Reservation ${b.id} ${status.toLowerCase()}.`);
+    } catch (error) {
+      notify(error.response?.data?.error || 'Reservation status could not be updated.');
+    }
   };
+  useEffect(() => {
+    if (!session?.token) {
+      setBookings([]);
+      setPayments([]);
+      return;
+    }
+    Promise.all([reloadBookings(), reloadPayments()]).catch((error) => {
+      console.error('Error loading reservations:', error);
+      if (error.response?.status === 401) setSession(null);
+      else
+        notify(
+          error.response?.data?.error || 'Reservation and payment records could not be loaded.',
+        );
+    });
+  }, [session?.token]);
   const ctx = {
     rooms,
     setRooms,
@@ -137,8 +176,6 @@ export function HotelProvider({ children }) {
     setStaff,
     session,
     setSession,
-    accounts,
-    setAccounts,
     role,
     isGuest,
     guest,
@@ -157,6 +194,9 @@ export function HotelProvider({ children }) {
     updateStatus,
     navigate,
     reloadStaff,
+    reloadRooms,
+    reloadBookings,
+    reloadPayments,
   };
 
   return <HotelContext.Provider value={ctx}>{children}</HotelContext.Provider>;

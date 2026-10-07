@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import AuthLayout from '../../layouts/AuthLayout';
 import PasswordField from '../../components/forms/PasswordField';
-import axios from 'axios';
+import api from '../../services/api';
 
 export default function ResetPassword() {
   const [params] = useSearchParams();
@@ -20,9 +20,7 @@ export default function ResetPassword() {
         <h1>Reset link expired or invalid</h1>
         <p>This password reset link is no longer valid. Please request a new one.</p>
         <p className="login-switch">
-          <Link to="/forgot-password">
-            Request new reset link
-          </Link>
+          <Link to="/forgot-password">Request new reset link</Link>
         </p>
       </AuthLayout>
     );
@@ -31,21 +29,21 @@ export default function ResetPassword() {
   async function submit(event) {
     event.preventDefault();
     setError('');
-    
+
     if (passwords.password.length < 8) {
       return setError('Use at least 8 characters for your password.');
     }
     if (passwords.password !== passwords.confirmPassword) {
       return setError('Your passwords do not match.');
     }
-    
+
     setBusy(true);
     try {
-      await axios.post('http://localhost:5000/api/reset-password', {
+      await api.post('/reset-password', {
         token,
         password: passwords.password,
       });
-      
+
       navigate('/login', { replace: true });
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to reset password. Please try again.');
@@ -89,9 +87,7 @@ export default function ResetPassword() {
         </button>
       </form>
       <p className="login-switch">
-        <Link to="/login">
-          Back to sign in
-        </Link>
+        <Link to="/login">Back to sign in</Link>
       </p>
     </AuthLayout>
   );

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { day, nights, money, dateLabel } from '../../data.js';
-import { uid, fullName } from '../../utils/formatters.js';
+import { nights, money, dateLabel } from '../../data.js';
+import { fullName } from '../../utils/formatters.js';
+import api from '../../services/api.js';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
 
@@ -14,26 +15,27 @@ export default function ReserveForm({ item, query, onClose, ...c }) {
       onClose={onClose}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (!c.available(item, query.start, query.end))
             return c.notify('This room is no longer available for these dates.');
           if (!guestId) return c.notify('Add a guest before creating a reservation.');
-          const b = {
-            id: uid('AH'),
+          const request = {
             guestId,
             roomId: item.id,
             checkIn: query.start,
             checkOut: query.end,
             guests: query.count,
-            status: 'Pending',
-            createdAt: day(),
-            rate: item.price,
           };
-          c.setBookings([b, ...c.bookings]);
-          onClose();
-          c.navigate('/reservations');
-          c.notify(`Reservation ${b.id} created. A lovely stay awaits.`);
+          try {
+            const { data: b } = await api.post('/reservations', request);
+            c.setBookings([b, ...c.bookings]);
+            onClose();
+            c.navigate('/reservations');
+            c.notify(`Reservation ${b.id} created. A lovely stay awaits.`);
+          } catch (error) {
+            c.notify(error.response?.data?.error || 'Reservation could not be created.');
+          }
         }}
       >
         <img className="modal-room-image short" src={item.image} alt={`${item.type} room`} />

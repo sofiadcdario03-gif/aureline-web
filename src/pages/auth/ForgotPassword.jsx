@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
-import axios from 'axios';
+import api from '../../services/api';
 import AuthLayout from '../../layouts/AuthLayout';
 import Field from '../../components/ui/Field';
 
@@ -15,18 +15,18 @@ export default function ForgotPassword() {
     event.preventDefault();
     setError('');
     setBusy(true);
-    
+
     try {
       // Send reset email
-      const response = await axios.post('http://localhost:5000/api/forgot-password', {
+      const response = await api.post('/forgot-password', {
         email: email.toLowerCase(),
       });
-      
+
       if (response.data.error) {
         setError(response.data.error);
         return;
       }
-      
+
       setSuccess(true);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to send reset email. Please try again.');
@@ -40,11 +40,12 @@ export default function ForgotPassword() {
       <AuthLayout>
         <div className="eyebrow">PASSWORD RESET</div>
         <h1>Check your email</h1>
-        <p>We've sent a password reset link to {email}. Click the link in the email to reset your password.</p>
+        <p>
+          We've sent a password reset link to {email}. Click the link in the email to reset your
+          password.
+        </p>
         <p className="login-switch">
-          <Link to="/login">
-            Back to sign in
-          </Link>
+          <Link to="/login">Back to sign in</Link>
         </p>
       </AuthLayout>
     );
@@ -83,10 +84,7 @@ export default function ForgotPassword() {
         </button>
       </form>
       <p className="login-switch">
-        Remember your password?{' '}
-        <Link to="/login">
-          Sign in
-        </Link>
+        Remember your password? <Link to="/login">Sign in</Link>
       </p>
     </AuthLayout>
   );

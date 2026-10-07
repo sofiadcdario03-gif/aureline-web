@@ -3,6 +3,7 @@ import { ArrowRight, Check, Trash2, Pencil } from 'lucide-react';
 import { money } from '../../data.js';
 import Badge from '../ui/Badge.jsx';
 import Modal from '../ui/Modal.jsx';
+import api from '../../services/api.js';
 
 export default function RoomDetailsModal({ item, onClose, ...c }) {
   return (
@@ -42,23 +43,25 @@ export default function RoomDetailsModal({ item, onClose, ...c }) {
             <button
               className="button danger-quiet"
               onClick={() => {
-                if (c.bookings.some((b) => b.roomId === item.id))
-                  return c.notify(
-                    'This room has reservation history. Set it to maintenance instead.',
-                  );
                 c.setModal({
                   type: 'confirmDelete',
-                  title: 'Delete this room?',
-                  message: `Room ${item.number} will be removed from the room collection.`,
-                  action: () => {
-                    c.setRooms(c.rooms.filter((r) => r.id !== item.id));
-                    c.notify('Room deleted.');
+                  title: 'Archive this room?',
+                  message: `Room ${item.number} will no longer appear in room search. Its reservation history will be retained.`,
+                  action: async () => {
+                    try {
+                      await api.patch(`/rooms/${item.id}/status`, { status: 'Inactive' });
+                      c.setRooms((rooms) => rooms.filter((room) => room.id !== item.id));
+                      c.notify('Room archived.');
+                    } catch (error) {
+                      c.notify(error.response?.data?.error || 'Room could not be archived.');
+                      throw error;
+                    }
                   },
                 });
               }}
             >
               <Trash2 size={16} />
-              Delete
+              Archive room
             </button>
             <button
               className="button secondary"

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Check } from 'lucide-react';
-import { uid, fullName } from '../../utils/formatters.js';
+import { fullName } from '../../utils/formatters.js';
+import api from '../../services/api.js';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
 
@@ -43,7 +44,7 @@ export default function GuestForm({ item, onClose, ...c }) {
 
   const handleChange = (key) => (e) => {
     let value = e.target.value;
-    
+
     // Handle phone number formatting
     if (key === 'phone') {
       // If value is empty or just the prefix, reset to prefix
@@ -58,34 +59,34 @@ export default function GuestForm({ item, onClose, ...c }) {
         value = '+63 9' + phoneDigits.slice(0, 9);
       }
     }
-    
+
     // Prevent invalid characters and limit length for first/last name
     if (key === 'firstName' || key === 'lastName') {
       value = value.replace(/[^a-zA-Z\s\-']/g, '').slice(0, 50);
     }
-    
+
     // Limit email to 254 characters
     if (key === 'email') {
       value = value.slice(0, 254);
     }
-    
+
     // Prevent invalid characters and limit length for address
     if (key === 'address') {
       value = value.replace(/[^a-zA-Z0-9\s#\-']/g, '').slice(0, 200);
     }
-    
+
     // Prevent invalid characters and limit length for passport
     if (key === 'passport') {
       value = value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
     }
-    
+
     setData({ ...data, [key]: value });
     validateField(key, value);
   };
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    
+
     // Validate all fields
     const validations = {
       firstName: validateField('firstName', data.firstName),
@@ -95,12 +96,12 @@ export default function GuestForm({ item, onClose, ...c }) {
       address: validateField('address', data.address),
       passport: validateField('passport', data.passport),
     };
-    
-    const hasErrors = Object.values(validations).some(err => err !== '');
+
+    const hasErrors = Object.values(validations).some((err) => err !== '');
     if (hasErrors) {
       return c.notify('Please fix the validation errors before submitting.');
     }
-    
+
     if (
       [...c.guests, ...c.staff].some(
         (g) =>
@@ -108,11 +109,35 @@ export default function GuestForm({ item, onClose, ...c }) {
       )
     )
       return c.notify('This email is already registered.');
-    const saved = { ...data, email: data.email.trim().toLowerCase(), id: item?.id || uid('G'), twoFactorEnabled: item?.twoFactorEnabled || false };
-    c.setGuests(item ? c.guests.map((g) => (g.id === item.id ? saved : g)) : [...c.guests, saved]);
-    if (c.isGuest) c.setSession({ ...c.session, name: fullName(saved) });
-    onClose();
-    c.notify(item ? 'Guest profile updated.' : 'Guest added to the directory.');
+    const profile = {
+      ...data,
+      email: data.email.trim().toLowerCase(),
+    };
+    try {
+      let saved;
+      if (c.isGuest) {
+        const { email, ...guestUpdates } = profile;
+        const { data: updatedProfile } = await api.patch('/profile', guestUpdates);
+        saved = { ...item, ...updatedProfile, id: c.session.guestId, email };
+        c.setGuests((previous) => previous.map((guest) => (guest.id === saved.id ? saved : guest)));
+        c.setSession({ ...c.session, name: fullName(saved) });
+      } else if (item) {
+        const { data: updatedGuest } = await api.put(`/guests/${item.id}`, profile);
+        saved = { ...item, ...updatedGuest };
+      } else {
+        const { data: createdGuest } = await api.post('/guests', profile);
+        saved = createdGuest;
+      }
+      c.setGuests((previous) =>
+        item
+          ? previous.map((guest) => (guest.id === item.id ? saved : guest))
+          : [...previous, saved],
+      );
+      onClose();
+      c.notify(item ? 'Guest profile updated.' : 'Guest added to the directory.');
+    } catch (error) {
+      c.notify(error.response?.data?.error || 'Guest profile could not be saved.');
+    }
   };
   return (
     <Modal
@@ -134,11 +159,16 @@ export default function GuestForm({ item, onClose, ...c }) {
               <Field
                 label={label}
                 required
+                disabled={c.isGuest && key === 'email'}
                 type={key === 'email' ? 'email' : key === 'phone' ? 'tel' : 'text'}
                 value={data[key]}
                 onChange={handleChange(key)}
               />
-              {fieldErrors[key] && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors[key]}</p>}
+              {fieldErrors[key] && (
+                <p className="form-error" style={{ fontSize: '12px' }}>
+                  {fieldErrors[key]}
+                </p>
+              )}
             </div>
           ))}
         </div>

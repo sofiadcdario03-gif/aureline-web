@@ -11,6 +11,7 @@
     "format": "prettier --write src tests README.md",
     "format:check": "prettier --check src tests README.md",
     "server": "node server.js",
+    "seed:rooms": "node scripts/seedRooms.js",
     "create-admin": "node createAdmin.js"
   },
   "dependencies": {

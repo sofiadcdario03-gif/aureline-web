@@ -1,74 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { normalizeEmail, destinationAfterLogin } from '../src/services/authService.js';
 import {
-  createAccountCredential,
-  signInAccount,
-  destinationAfterLogin,
-  ACCESS_PASSWORD,
-} from '../src/services/authService.js';
-import { initialGuests, initialStaff } from '../src/data.js';
+  createAccessToken,
+  generateSalt,
+  hashPassword,
+  verifyAccessToken,
+  verifyPassword,
+} from '../server/security.js';
 
-const fixtures = { guests: initialGuests, staff: initialStaff, accounts: [] };
-test('one email/password login resolves Admin, Front Desk, and Guest accounts', async () => {
-  for (const [email, role] of [
-    ['alex@aureline.hotel', 'Admin'],
-    ['maria@aureline.hotel', 'Front Desk'],
-    ['isabella.reyes@example.com', 'Guest'],
-  ]) {
-    const session = await signInAccount({ ...fixtures, email, password: ACCESS_PASSWORD });
-    assert.equal(session.role, role);
-    assert.ok(session.staffId || session.guestId);
-  }
+test('emails are normalized before authentication', () => {
+  assert.equal(normalizeEmail(' Guest@Example.COM '), 'guest@example.com');
 });
-test('wrong passwords, unknown emails, and inactive staff cannot sign in', async () => {
-  await assert.rejects(
-    signInAccount({ ...fixtures, email: 'alex@aureline.hotel', password: 'wrong' }),
-  );
-  await assert.rejects(
-    signInAccount({ ...fixtures, email: 'nobody@example.com', password: ACCESS_PASSWORD }),
-  );
-  await assert.rejects(
-    signInAccount({
-      ...fixtures,
-      staff: initialStaff.map((s) => ({ ...s, status: 'Inactive' })),
-      email: 'maria@aureline.hotel',
-      password: ACCESS_PASSWORD,
-    }),
-  );
+
+test('passwords are salted and verified without storing the original text', () => {
+  const password = 'A secure test password';
+  const salt = generateSalt();
+  const digest = hashPassword(password, salt);
+  assert.ok(verifyPassword(password, salt, digest));
+  assert.equal(verifyPassword('wrong password', salt, digest), false);
+  assert.equal(JSON.stringify({ salt, digest }).includes(password), false);
 });
-test('staff accounts can use an administrator-assigned password', async () => {
-  const staff = initialStaff.map((person) =>
-    person.id === 'ST-002' ? { ...person, password: 'FrontDesk123!' } : person,
-  );
-  const session = await signInAccount({
-    ...fixtures,
-    staff,
-    email: 'maria@aureline.hotel',
-    password: 'FrontDesk123!',
+
+test('access tokens are signed, expire, and reject altered claims', () => {
+  const secret = 'test-only-secret-with-sufficient-entropy';
+  const identity = { role: 'Admin', staffId: 'ST-1' };
+  const token = createAccessToken(identity, secret, 1000);
+  assert.deepEqual(verifyAccessToken(token, secret, 1001), {
+    ...identity,
+    exp: 1000 + 12 * 60 * 60 * 1000,
   });
-  assert.equal(session.role, 'Front Desk');
-  await assert.rejects(
-    signInAccount({ ...fixtures, staff, email: 'maria@aureline.hotel', password: ACCESS_PASSWORD }),
-  );
+  assert.equal(verifyAccessToken(token, 'a different secret', 1001), null);
+  assert.equal(verifyAccessToken(token, secret, 1000 + 12 * 60 * 60 * 1000), null);
+  assert.equal(verifyAccessToken(`${token}x`, secret, 1001), null);
 });
-test('guest registration credentials support returning login without persisting a plain password', async () => {
-  const guest = { id: 'G-TEST', firstName: 'Test', lastName: 'Guest', email: 'test@example.com' };
-  const credential = await createAccountCredential(guest.id, 'SamplePass123!');
-  assert.ok(credential.salt && credential.digest);
-  assert.ok(!JSON.stringify(credential).includes('SamplePass123!'));
-  const input = {
-    guests: [guest],
-    staff: initialStaff,
-    accounts: [credential],
-    email: ' TEST@example.com ',
-    password: 'SamplePass123!',
-  };
-  const session = await signInAccount(input);
-  assert.equal(session.role, 'Guest');
-  assert.equal(session.guestId, guest.id);
-  await assert.rejects(signInAccount({ ...input, password: 'WrongPassword' }));
-});
-test('login keeps booking dates while rejecting external and disallowed redirects', () => {
+
+test('login redirects retain valid stay searches without allowing external destinations', () => {
   const search = '/search?start=2026-12-02&end=2026-12-05&guests=2';
   assert.equal(destinationAfterLogin('Guest', search), search);
   assert.equal(destinationAfterLogin('Guest', '/dashboard'), '/my-stays');

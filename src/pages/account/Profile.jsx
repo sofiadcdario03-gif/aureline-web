@@ -1,15 +1,10 @@
 import React, { useState } from 'react';
 import { Pencil, LockKeyhole } from 'lucide-react';
-import axios from 'axios';
+import api from '../../services/api.js';
 import { initials } from '../../utils/formatters.js';
 import Badge from '../../components/ui/Badge.jsx';
 import PageHeading from '../../components/ui/PageHeading.jsx';
 import PasswordField from '../../components/forms/PasswordField.jsx';
-import {
-  createAccountCredential,
-  normalizeEmail,
-  signInAccount,
-} from '../../services/authService.js';
 
 export default function Profile(c) {
   const g = c.isGuest ? c.guest(c.session.guestId) : null;
@@ -21,10 +16,7 @@ export default function Profile(c) {
   const [editingPhone, setEditingPhone] = useState(false);
   const [phone, setPhone] = useState(staffAccount?.phone || '');
   const [phoneError, setPhoneError] = useState('');
-  const [pendingPasswordData, setPendingPasswordData] = useState(null);
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(
-    c.isGuest ? (g?.twoFactorEnabled || false) : (staffAccount?.twoFactorEnabled || false)
-  );
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(c.session?.twoFactorEnabled || false);
 
   const startEditingPhone = () => {
     setEditingPhone(true);
@@ -48,7 +40,7 @@ export default function Profile(c) {
     // Reconstruct phone number with +63 9 prefix
     const formatted = '+63 9' + limitedPhoneDigits;
     setPhone(formatted);
-    
+
     // Validation
     if (limitedPhoneDigits.length < 9) {
       setPhoneError('Phone number must be exactly 9 digits');
@@ -66,41 +58,16 @@ export default function Profile(c) {
       return setPasswordError('Your new passwords do not match.');
     setBusy(true);
     try {
-      await signInAccount({
-        email,
-        password: passwords.current,
-        guests: c.guests,
-        staff: c.staff,
-        accounts: c.accounts,
-      });
-      
-      // Store pending password data for after OTP verification
-      setPendingPasswordData({
-        currentPassword: passwords.current,
-        newPassword: passwords.next,
-      });
-      
-      // Show OTP modal (it will send the OTP on mount)
+      await api.post('/auth/verify-password', { currentPassword: passwords.current });
       c.setModal({
         type: 'otp',
         email: email.toLowerCase(),
         purpose: 'Password Change',
         onVerified: async () => {
-          if (c.isGuest) {
-            const credential = await createAccountCredential(c.session.guestId, passwords.next);
-            c.setAccounts([
-              ...c.accounts.filter((account) => account.guestId !== c.session.guestId),
-              credential,
-            ]);
-          } else {
-            // Update password in database
-            await axios.put(`http://localhost:5000/api/staff/${c.session.staffId}/password`, {
-              currentPassword: passwords.current,
-              newPassword: passwords.next,
-            });
-            // Reload staff from database
-            await c.reloadStaff();
-          }
+          await api.put('/auth/password', {
+            currentPassword: passwords.current,
+            newPassword: passwords.next,
+          });
           setPasswords({ current: '', next: '', confirm: '' });
           c.notify('Password updated. Please sign in again.');
           // Logout after password change
@@ -129,14 +96,11 @@ export default function Profile(c) {
         setBusy(false);
         return;
       }
-      
+
       // Format phone number
       const formattedPhone = '+63 9' + phoneDigits.slice(0, 9);
-      
-      await axios.put(`http://localhost:5000/api/staff/${c.session.staffId}`, {
-        ...staffAccount,
-        phone: formattedPhone,
-      });
+
+      await api.patch('/profile', { phone: formattedPhone });
       await c.reloadStaff();
       setEditingPhone(false);
       setPhoneError('');
@@ -175,9 +139,18 @@ export default function Profile(c) {
                     type="tel"
                     value={phone}
                     onChange={handlePhoneChange}
-                    style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #ccc', marginBottom: '4px' }}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      border: '1px solid #ccc',
+                      marginBottom: '4px',
+                    }}
                   />
-                  {phoneError && <p className="form-error" style={{ fontSize: '12px' }}>{phoneError}</p>}
+                  {phoneError && (
+                    <p className="form-error" style={{ fontSize: '12px' }}>
+                      {phoneError}
+                    </p>
+                  )}
                   <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                     <button
                       className="button primary"
@@ -202,7 +175,9 @@ export default function Profile(c) {
                 </div>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <strong>{c.isGuest ? (g?.phone || 'Not provided') : (staffAccount?.phone || 'Not provided')}</strong>
+                  <strong>
+                    {c.isGuest ? g?.phone || 'Not provided' : staffAccount?.phone || 'Not provided'}
+                  </strong>
                   {!c.isGuest && (
                     <button
                       className="icon-button"
@@ -224,23 +199,36 @@ export default function Profile(c) {
               <strong>{c.role}</strong>
             </div>
           </div>
-          <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div
+            style={{
+              marginTop: '20px',
+              paddingTop: '20px',
+              borderTop: '1px solid #eee',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={twoFactorEnabled}
                 onChange={async (e) => {
-                  setTwoFactorEnabled(e.target.checked);
-                  if (c.isGuest) {
-                    c.setGuests(c.guests.map(g => g.id === c.session.guestId ? { ...g, twoFactorEnabled: e.target.checked } : g));
-                  } else {
-                    await axios.put(`http://localhost:5000/api/staff/${c.session.staffId}`, {
-                      ...staffAccount,
-                      twoFactorEnabled: e.target.checked,
-                    });
-                    await c.reloadStaff();
+                  try {
+                    await api.patch('/profile', { twoFactorEnabled: e.target.checked });
+                    setTwoFactorEnabled(e.target.checked);
+                    c.setSession({ ...c.session, twoFactorEnabled: e.target.checked });
+                    if (!c.isGuest) await c.reloadStaff();
+                    c.notify(
+                      e.target.checked
+                        ? 'Two-factor authentication enabled'
+                        : 'Two-factor authentication disabled',
+                    );
+                  } catch (error) {
+                    c.notify(
+                      error.response?.data?.error || 'Profile settings could not be updated.',
+                    );
                   }
-                  c.notify(e.target.checked ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled');
                 }}
                 style={{ width: '18px', height: '18px' }}
               />

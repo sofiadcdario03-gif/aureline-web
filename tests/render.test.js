@@ -4,12 +4,10 @@ import React from 'react';
 import { renderToString } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { createServer } from 'vite';
-import { day } from '../src/data.js';
+import { day, initialRooms } from '../src/data.js';
 
 let server;
 let App;
-let HotelProvider;
-let useHotel;
 let ModalContent;
 const storage = new Map();
 globalThis.localStorage = {
@@ -19,7 +17,6 @@ globalThis.localStorage = {
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   App = (await server.ssrLoadModule('/src/App.jsx')).default;
-  ({ HotelProvider, useHotel } = await server.ssrLoadModule('/src/context/HotelContext.jsx'));
   ModalContent = (await server.ssrLoadModule('/src/components/modals/ModalContent.jsx')).default;
 });
 after(async () => {
@@ -27,9 +24,14 @@ after(async () => {
   delete globalThis.localStorage;
 });
 
-const admin = { role: 'Admin', name: 'Alex Morgan', staffId: 'ST-001' };
-const frontDesk = { role: 'Front Desk', name: 'Maria Cruz', staffId: 'ST-002' };
-const guest = { role: 'Guest', name: 'Isabella Reyes', guestId: 'G-001' };
+const admin = { role: 'Admin', name: 'Alex Morgan', staffId: 'ST-001', token: 'test-token' };
+const frontDesk = {
+  role: 'Front Desk',
+  name: 'Maria Cruz',
+  staffId: 'ST-002',
+  token: 'test-token',
+};
+const guest = { role: 'Guest', name: 'Isabella Reyes', guestId: 'G-001', token: 'test-token' };
 function render(path, session = null) {
   storage.clear();
   storage.set('ah-session-v2', JSON.stringify(session));
@@ -70,11 +72,9 @@ test('management screens survive the component extraction', () => {
     assert.ok(html.includes('Alex Morgan'));
   }
 });
-test('guest screen only renders the signed-in guest’s reservations', () => {
+test('guest screen renders an empty state before server reservations load', () => {
   const html = render('/my-stays', guest);
-  assert.ok(html.includes('AH-2041'));
-  assert.ok(html.includes('AH-2034'));
-  assert.ok(!html.includes('AH-2040'));
+  assert.ok(html.includes('Your next story is waiting.'));
   assert.ok(!html.includes('Team management'));
 });
 test('front desk navigation does not expose admin-only team management', () => {
@@ -82,31 +82,76 @@ test('front desk navigation does not expose admin-only team management', () => {
   assert.ok(html.includes('Maria Cruz'));
   assert.ok(!html.includes('Team management'));
 });
-test('booking search restores its URL state and shows available choices', () => {
+test('booking search restores its URL state before server availability results load', () => {
   const html = render(`/search?start=${day(5)}&end=${day(7)}&guests=2&type=Suite`);
-  assert.ok(html.includes('for your'));
-  assert.ok(html.includes('The Aureline Suite'));
+  assert.match(html, /2(?:<!-- -->)?-night stay/);
+  assert.match(html, /0(?:<!-- -->)? rooms/);
   assert.ok(!html.includes('The Quiet Single'));
 });
 test('separated detail dialogs and CRUD forms render with their dependencies', () => {
-  storage.clear();
-  storage.set('ah-session-v2', JSON.stringify(admin));
-  function Harness({ type }) {
-    const hotel = useHotel();
-    const item =
-      type.startsWith('room') || type === 'reserve'
-        ? hotel.rooms[0]
-        : type.startsWith('guest')
-          ? hotel.guests[0]
-          : type === 'staffForm'
-            ? hotel.staff[1]
-            : hotel.bookings[0];
-    return React.createElement(ModalContent, {
-      ...hotel,
-      onClose: () => {},
-      modal: { type, item, query: { start: day(8), end: day(10), count: 1 } },
-    });
-  }
+  const room = initialRooms[0];
+  const guestRecord = {
+    id: 'G-001',
+    firstName: 'Isabella',
+    lastName: 'Reyes',
+    email: 'isabella@example.com',
+    phone: '+63 9123456789',
+    address: 'Sorsogon City',
+    passport: 'AB12345',
+  };
+  const booking = {
+    id: 'AH-2041',
+    guestId: guestRecord.id,
+    roomId: room.id,
+    checkIn: day(8),
+    checkOut: day(10),
+    guests: 1,
+    rate: room.price,
+    status: 'Pending',
+    createdAt: day(),
+  };
+  const hotel = {
+    rooms: [room],
+    guests: [guestRecord],
+    staff: [
+      {
+        id: 'ST-001',
+        name: 'Alex Morgan',
+        email: 'alex@example.com',
+        role: 'Admin',
+        status: 'Active',
+      },
+      {
+        id: 'ST-002',
+        name: 'Maria Cruz',
+        email: 'maria@example.com',
+        role: 'Front Desk',
+        status: 'Active',
+      },
+    ],
+    bookings: [booking],
+    payments: [],
+    role: 'Admin',
+    isGuest: false,
+    session: admin,
+    guest: (id) => [guestRecord].find((record) => record.id === id),
+    room: (id) => [room].find((record) => record.id === id),
+    total: (item) => item.rate * 2,
+    paid: () => 0,
+    paymentStatus: () => 'Unpaid',
+    roomStatus: () => 'Available',
+    available: () => true,
+    setModal: () => {},
+    setRooms: () => {},
+    setBookings: () => {},
+    setPayments: () => {},
+    setGuests: () => {},
+    setStaff: () => {},
+    notify: () => {},
+    navigate: () => {},
+    updateStatus: () => {},
+    reloadStaff: async () => {},
+  };
   for (const type of [
     'room',
     'guest',
@@ -119,11 +164,23 @@ test('separated detail dialogs and CRUD forms render with their dependencies', (
     'editBooking',
     'payment',
   ]) {
+    const item =
+      type.startsWith('room') || type === 'reserve'
+        ? room
+        : type.startsWith('guest')
+          ? guestRecord
+          : type === 'staffForm'
+            ? hotel.staff[1]
+            : booking;
     const html = renderToString(
       React.createElement(
         MemoryRouter,
         null,
-        React.createElement(HotelProvider, null, React.createElement(Harness, { type })),
+        React.createElement(ModalContent, {
+          ...hotel,
+          onClose: () => {},
+          modal: { type, item, query: { start: day(8), end: day(10), count: 1 } },
+        }),
       ),
     );
     assert.ok(html.includes('role="dialog"'), `Dialog failed: ${type}`);

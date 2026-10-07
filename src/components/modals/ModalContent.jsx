@@ -34,9 +34,15 @@ export default function ModalContent({ modal, onClose, ...hotel }) {
           </button>
           <button
             className="button danger"
-            onClick={() => {
-              modal.action();
-              onClose();
+            onClick={async () => {
+              try {
+                await modal.action();
+                onClose();
+              } catch (error) {
+                hotel.notify(
+                  error.response?.data?.error || 'The requested change could not be completed.',
+                );
+              }
             }}
           >
             Delete record

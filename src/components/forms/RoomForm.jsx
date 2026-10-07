@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Check } from 'lucide-react';
 import { photos } from '../../data.js';
-import { uid } from '../../utils/formatters.js';
 import { isActiveReservation as active } from '../../reservationRules.js';
+import api from '../../services/api.js';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
 
@@ -25,7 +25,7 @@ export default function RoomForm({ item, onClose, ...c }) {
       onClose={onClose}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (c.rooms.some((r) => r.id !== item?.id && r.number === data.number))
             return c.notify('This room number already exists.');
@@ -42,17 +42,25 @@ export default function RoomForm({ item, onClose, ...c }) {
             )
           )
             return c.notify('Capacity cannot be lower than an active reservation’s guest count.');
-          const saved = {
+          const payload = {
             ...data,
             price: Number(data.price),
             capacity: Number(data.capacity),
-            id: item?.id || uid('R'),
           };
-          c.setRooms(
-            item ? c.rooms.map((r) => (r.id === item.id ? saved : r)) : [...c.rooms, saved],
-          );
-          onClose();
-          c.notify(item ? 'Room details updated.' : 'New room added.');
+          try {
+            const { data: saved } = item
+              ? await api.put(`/rooms/${item.id}`, payload)
+              : await api.post('/rooms', payload);
+            c.setRooms((previous) =>
+              item
+                ? previous.map((room) => (room.id === item.id ? saved : room))
+                : [...previous, saved],
+            );
+            onClose();
+            c.notify(item ? 'Room details updated.' : 'New room added.');
+          } catch (error) {
+            c.notify(error.response?.data?.error || 'Room could not be saved.');
+          }
         }}
       >
         <div className="form-grid">

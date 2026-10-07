@@ -6,16 +6,12 @@ import AuthLayout from '../../layouts/AuthLayout';
 import Field from '../../components/ui/Field';
 import PasswordField from '../../components/forms/PasswordField';
 import OTPModal from '../../components/modals/OTPModal';
-import {
-  createAccountCredential,
-  normalizeEmail,
-  destinationAfterLogin,
-} from '../../services/authService';
-import { uid, fullName } from '../../utils/formatters';
-import axios from 'axios';
+import { normalizeEmail, destinationAfterLogin } from '../../services/authService';
+import { fullName } from '../../utils/formatters';
+import api from '../../services/api';
 
 export default function SignUp() {
-  const { session, setSession, guests, setGuests, staff, accounts, setAccounts, setModal } = useHotel();
+  const { session, setSession, setGuests, setModal } = useHotel();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [data, setData] = useState({
@@ -30,8 +26,6 @@ export default function SignUp() {
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [pendingGuest, setPendingGuest] = useState(null);
-  const [pendingCredential, setPendingCredential] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const redirect = params.get('redirect');
 
@@ -68,7 +62,7 @@ export default function SignUp() {
 
   const update = (key) => (event) => {
     let value = event.target.value;
-    
+
     // Handle phone number formatting
     if (key === 'phone') {
       // If value is empty or just the prefix, reset to prefix
@@ -83,27 +77,27 @@ export default function SignUp() {
         value = '+63 9' + phoneDigits.slice(0, 9);
       }
     }
-    
+
     // Prevent invalid characters and limit length for first/last name
     if (key === 'firstName' || key === 'lastName') {
       value = value.replace(/[^a-zA-Z\s\-']/g, '').slice(0, 50);
     }
-    
+
     // Limit email to 254 characters
     if (key === 'email') {
       value = value.slice(0, 254);
     }
-    
+
     // Prevent invalid characters and limit length for address
     if (key === 'address') {
       value = value.replace(/[^a-zA-Z0-9\s#\-']/g, '').slice(0, 200);
     }
-    
+
     // Prevent invalid characters and limit length for passport
     if (key === 'passport') {
       value = value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
     }
-    
+
     setData({ ...data, [key]: value });
     validateField(key, value);
   };
@@ -112,7 +106,7 @@ export default function SignUp() {
   async function submit(event) {
     event.preventDefault();
     setError('');
-    
+
     // Validate all fields
     const validations = {
       firstName: validateField('firstName', data.firstName),
@@ -122,16 +116,16 @@ export default function SignUp() {
       address: validateField('address', data.address),
       passport: validateField('passport', data.passport),
     };
-    
-    const hasErrors = Object.values(validations).some(err => err !== '');
+
+    const hasErrors = Object.values(validations).some((err) => err !== '');
     if (hasErrors) {
       return setError('Please fix the validation errors before submitting.');
     }
-    
+
     if (data.password.length < 8) return setError('Use at least 8 characters for your password.');
     if (data.password !== data.confirmPassword) return setError('Your passwords do not match.');
     const email = normalizeEmail(data.email);
-    
+
     setBusy(true);
     try {
       const { password, confirmPassword, ...profile } = data;
@@ -140,29 +134,22 @@ export default function SignUp() {
         firstName: profile.firstName.trim(),
         lastName: profile.lastName.trim(),
         email,
-        id: uid('G'),
-        twoFactorEnabled: false,
       };
-      const credential = await createAccountCredential(guest.id, password);
-      
-      // Store pending data for after OTP verification
-      setPendingGuest(guest);
-      setPendingCredential(credential);
-      
       // Show OTP modal
       setModal({
         type: 'otp',
         email: email,
         purpose: 'Account Creation',
-        onVerified: async () => {
+        onVerified: async (verified) => {
           // Save to MongoDB after OTP verification
           try {
-            await axios.post('http://localhost:5000/api/guests', guest);
-            await axios.post('http://localhost:5000/api/accounts', credential);
-            
-            setAccounts([...accounts, credential]);
-            setGuests([...guests, guest]);
-            setSession({ name: fullName(guest), role: 'Guest', guestId: guest.id });
+            const { data: account } = await api.post('/auth/register', {
+              profile: guest,
+              password,
+              verificationToken: verified?.registrationToken,
+            });
+            setGuests([account.guest]);
+            setSession({ ...account.user, token: account.token });
             navigate(destinationAfterLogin('Guest', redirect), { replace: true });
           } catch (err) {
             setError(err.response?.data?.error || 'Failed to create account. Please try again.');
@@ -170,8 +157,8 @@ export default function SignUp() {
         },
       });
     } catch (err) {
-      console.error('Error creating account:', err);
-      setError('We could not create your account. Please try again on localhost or HTTPS.');
+      console.error('Error preparing account creation:', err);
+      setError('We could not start account creation. Please try again.');
     } finally {
       setBusy(false);
     }
@@ -191,7 +178,11 @@ export default function SignUp() {
               value={data.firstName}
               onChange={update('firstName')}
             />
-            {fieldErrors.firstName && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors.firstName}</p>}
+            {fieldErrors.firstName && (
+              <p className="form-error" style={{ fontSize: '12px' }}>
+                {fieldErrors.firstName}
+              </p>
+            )}
           </div>
           <div>
             <Field
@@ -201,7 +192,11 @@ export default function SignUp() {
               value={data.lastName}
               onChange={update('lastName')}
             />
-            {fieldErrors.lastName && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors.lastName}</p>}
+            {fieldErrors.lastName && (
+              <p className="form-error" style={{ fontSize: '12px' }}>
+                {fieldErrors.lastName}
+              </p>
+            )}
           </div>
         </div>
         <div className="form-grid">
@@ -220,7 +215,11 @@ export default function SignUp() {
                 }
               }}
             />
-            {fieldErrors.email && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors.email}</p>}
+            {fieldErrors.email && (
+              <p className="form-error" style={{ fontSize: '12px' }}>
+                {fieldErrors.email}
+              </p>
+            )}
           </div>
           <div>
             <Field
@@ -231,7 +230,11 @@ export default function SignUp() {
               value={data.phone}
               onChange={update('phone')}
             />
-            {fieldErrors.phone && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors.phone}</p>}
+            {fieldErrors.phone && (
+              <p className="form-error" style={{ fontSize: '12px' }}>
+                {fieldErrors.phone}
+              </p>
+            )}
           </div>
         </div>
         <div>
@@ -242,7 +245,11 @@ export default function SignUp() {
             value={data.address}
             onChange={update('address')}
           />
-          {fieldErrors.address && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors.address}</p>}
+          {fieldErrors.address && (
+            <p className="form-error" style={{ fontSize: '12px' }}>
+              {fieldErrors.address}
+            </p>
+          )}
         </div>
         <div>
           <Field
@@ -252,7 +259,11 @@ export default function SignUp() {
             value={data.passport}
             onChange={update('passport')}
           />
-          {fieldErrors.passport && <p className="form-error" style={{ fontSize: '12px' }}>{fieldErrors.passport}</p>}
+          {fieldErrors.passport && (
+            <p className="form-error" style={{ fontSize: '12px' }}>
+              {fieldErrors.passport}
+            </p>
+          )}
         </div>
         <div className="form-grid">
           <PasswordField

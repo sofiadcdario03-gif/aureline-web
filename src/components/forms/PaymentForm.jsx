@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Check, CreditCard, Printer } from 'lucide-react';
-import { day, nights, money, dateLabel } from '../../data.js';
-import { uid, fullName } from '../../utils/formatters.js';
+import { nights, money, dateLabel } from '../../data.js';
+import { fullName } from '../../utils/formatters.js';
+import api from '../../services/api.js';
 import Badge from '../ui/Badge.jsx';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
@@ -55,17 +56,23 @@ export default function PaymentForm({ item, onClose, ...c }) {
       </div>
       {balance > 0 && (
         <form
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
             const value = Number(amount);
             if (!Number.isFinite(value) || value <= 0 || value > balance)
               return c.notify('Enter an amount within the outstanding balance.');
-            c.setPayments([
-              ...c.payments,
-              { id: uid('PAY'), bookingId: b.id, amount: value, method, date: day() },
-            ]);
-            setAmount(Math.max(0, balance - value));
-            c.notify('Payment recorded successfully.');
+            try {
+              const { data: payment } = await api.post('/payments', {
+                bookingId: b.id,
+                amount: value,
+                method,
+              });
+              c.setPayments([...c.payments, payment]);
+              setAmount(Math.max(0, balance - value));
+              c.notify('Payment recorded successfully.');
+            } catch (error) {
+              c.notify(error.response?.data?.error || 'Payment could not be recorded.');
+            }
           }}
         >
           <div className="form-grid">

@@ -4,11 +4,29 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+import {
+  createAccessToken,
+  generateSalt,
+  hashPassword,
+  verifyAccessToken,
+  verifyPassword,
+} from './server/security.js';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+const tokenSecret = process.env.JWT_SECRET || crypto.randomBytes(32);
+
+if (process.env.JWT_SECRET && Buffer.byteLength(process.env.JWT_SECRET) < 32) {
+  throw new Error('JWT_SECRET must contain at least 32 bytes.');
+}
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be configured in production.');
+  }
+  console.warn('JWT_SECRET is unset; sign-in tokens will be invalidated when the server restarts.');
+}
 
 // Middleware
 app.use(cors());
@@ -16,21 +34,180 @@ app.use(express.json());
 
 // MongoDB Connection
 const uri = process.env.MONGO_URI;
+if (!uri) throw new Error('MONGO_URI must be configured before starting the server.');
 const client = new MongoClient(uri);
 let db;
 
 async function connectToDatabase() {
-  try {
-    await client.connect();
-    console.log('Connected to MongoDB Atlas');
-    db = client.db('hotel-management');
-  } catch (error) {
-    console.error('MongoDB connection error:', error);
-    process.exit(1);
-  }
+  await client.connect();
+  db = client.db(process.env.MONGODB_DB_NAME || 'hotel-management');
+  await Promise.all([
+    db.collection('rooms').createIndex({ id: 1 }, { unique: true }),
+    db.collection('rooms').createIndex({ number: 1 }, { unique: true }),
+    db.collection('rooms').createIndex({ status: 1, type: 1, capacity: 1 }),
+    db.collection('reservations').createIndex({ id: 1 }, { unique: true }),
+    db.collection('reservations').createIndex({ roomId: 1, status: 1, checkIn: 1 }),
+    db.collection('reservations').createIndex({ guestId: 1, createdAt: -1 }),
+    db.collection('payments').createIndex({ id: 1 }, { unique: true }),
+    db.collection('payments').createIndex({ bookingId: 1 }),
+    db.collection('guests').createIndex({ id: 1 }, { unique: true }),
+    db.collection('guests').createIndex({ email: 1 }, { unique: true }),
+    db.collection('staff').createIndex({ id: 1 }, { unique: true }),
+    db.collection('staff').createIndex({ email: 1 }, { unique: true }),
+    db.collection('accounts').createIndex({ guestId: 1 }, { unique: true }),
+  ]);
+  console.log('Connected to MongoDB Atlas');
 }
 
-connectToDatabase();
+const ACTIVE_RESERVATION_STATUSES = ['Pending', 'Confirmed', 'Checked-in'];
+
+function validStayDates(checkIn, checkOut) {
+  const validDate = (value) =>
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)) &&
+    new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+  return validDate(checkIn) && validDate(checkOut) && checkOut > checkIn;
+}
+
+function hotelToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date());
+}
+
+function stayNights(checkIn, checkOut) {
+  return Math.round(
+    (Date.parse(`${checkOut}T00:00:00.000Z`) - Date.parse(`${checkIn}T00:00:00.000Z`)) / 86400000,
+  );
+}
+
+function stayTotal(booking) {
+  return Math.round(booking.rate * stayNights(booking.checkIn, booking.checkOut) * 100) / 100;
+}
+
+async function authenticate(req, res, next) {
+  const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+  const identity = verifyAccessToken(token, tokenSecret);
+  if (
+    !identity ||
+    Boolean(identity.guestId) === Boolean(identity.staffId) ||
+    !['Guest', 'Admin', 'Front Desk'].includes(identity.role)
+  ) {
+    return res.status(401).json({ error: 'Please sign in to continue.' });
+  }
+
+  const person = identity.guestId
+    ? await db.collection('guests').findOne({ id: identity.guestId }, { projection: { _id: 0 } })
+    : await db
+        .collection('staff')
+        .findOne(
+          { id: identity.staffId, status: 'Active' },
+          { projection: { _id: 0, salt: 0, digest: 0, password: 0 } },
+        );
+  if (
+    !person ||
+    (identity.guestId && identity.role !== 'Guest') ||
+    (identity.staffId && identity.role !== person.role)
+  ) {
+    return res.status(401).json({ error: 'Your session is no longer valid.' });
+  }
+
+  req.auth = {
+    ...identity,
+    name: identity.guestId ? `${person.firstName} ${person.lastName}` : person.name,
+  };
+  next();
+}
+
+function allowRoles(...roles) {
+  return (req, res, next) => {
+    if (!req.auth || !roles.includes(req.auth.role)) {
+      return res.status(403).json({ error: 'You are not allowed to perform this action.' });
+    }
+    next();
+  };
+}
+
+function safeRoom(room) {
+  const { _id, reservationVersion, ...publicRoom } = room;
+  return publicRoom;
+}
+
+function safeReservation(reservation) {
+  const { _id, paymentVersion, ...publicReservation } = reservation;
+  return publicReservation;
+}
+
+function validateRoom(room) {
+  if (
+    !room ||
+    typeof room.number !== 'string' ||
+    !room.number.trim() ||
+    room.number.length > 20 ||
+    !['Single', 'Double', 'Deluxe', 'Suite'].includes(room.type) ||
+    !Number.isInteger(Number(room.capacity)) ||
+    Number(room.capacity) < 1 ||
+    Number(room.capacity) > 20 ||
+    !Number.isFinite(Number(room.price)) ||
+    Number(room.price) <= 0 ||
+    !['Available', 'Maintenance', 'Inactive'].includes(room.status) ||
+    typeof room.description !== 'string' ||
+    !room.description.trim() ||
+    typeof room.image !== 'string'
+  ) {
+    return 'Provide a valid room number, type, capacity, price, status, description, and image.';
+  }
+  try {
+    const imageUrl = new URL(room.image);
+    if (!['http:', 'https:'].includes(imageUrl.protocol))
+      return 'Image URL must use HTTP or HTTPS.';
+  } catch {
+    return 'Enter a valid image URL.';
+  }
+  return null;
+}
+
+async function loadAvailableRooms(query = {}) {
+  const filter = { status: { $ne: 'Inactive' } };
+  if (query.type && ['Single', 'Double', 'Deluxe', 'Suite'].includes(query.type)) {
+    filter.type = query.type;
+  }
+  const capacity = Number(query.guests);
+  if (Number.isInteger(capacity) && capacity > 0) filter.capacity = { $gte: capacity };
+  let rooms = await db.collection('rooms').find(filter).toArray();
+  if (query.checkIn || query.checkOut) {
+    if (!validStayDates(query.checkIn, query.checkOut) || query.checkIn < hotelToday()) {
+      return { error: 'Choose valid future dates with check-out after check-in.' };
+    }
+    const roomIds = rooms.map((room) => room.id);
+    const conflicts = await db
+      .collection('reservations')
+      .find({
+        roomId: { $in: roomIds },
+        status: { $in: ACTIVE_RESERVATION_STATUSES },
+        checkIn: { $lt: query.checkOut },
+        checkOut: { $gt: query.checkIn },
+      })
+      .project({ roomId: 1 })
+      .toArray();
+    const unavailableIds = new Set(conflicts.map((booking) => booking.roomId));
+    rooms = rooms.filter((room) => room.status === 'Available' && !unavailableIds.has(room.id));
+  }
+  return { rooms: rooms.map(safeRoom) };
+}
+
+async function checkStayAvailability(room, checkIn, checkOut, session, excludedId) {
+  if (room.status !== 'Available') return false;
+  return !(await db.collection('reservations').findOne(
+    {
+      roomId: room.id,
+      ...(excludedId ? { id: { $ne: excludedId } } : {}),
+      status: { $in: ACTIVE_RESERVATION_STATUSES },
+      checkIn: { $lt: checkOut },
+      checkOut: { $gt: checkIn },
+    },
+    { session },
+  ));
+}
 
 // Email Configuration
 const transporter = nodemailer.createTransport({
@@ -47,7 +224,9 @@ const transporter = nodemailer.createTransport({
 transporter.verify((error, success) => {
   if (error) {
     console.error('Email configuration error:', error);
-    console.log('Email sending will be disabled. Check your EMAIL_USER and EMAIL_PASS in .env file.');
+    console.log(
+      'Email sending will be disabled. Check your EMAIL_USER and EMAIL_PASS in .env file.',
+    );
   } else {
     console.log('Email server is ready to send messages');
   }
@@ -90,62 +269,674 @@ async function sendStaffCredentialsEmail(staff, password) {
 
 // API Routes
 
-// Create guest account
-app.post('/api/guests', async (req, res) => {
+function requestError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function cleanPerson(person) {
+  if (person.role === 'Guest') {
+    return {
+      name: `${person.firstName} ${person.lastName}`,
+      role: 'Guest',
+      guestId: person.id,
+      twoFactorEnabled: person.twoFactorEnabled === true,
+    };
+  }
+  return {
+    name: person.name,
+    role: person.role,
+    staffId: person.id,
+    twoFactorEnabled: person.twoFactorEnabled === true,
+  };
+}
+
+app.post('/api/auth/login', async (req, res) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body.password;
+  if (!email || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
+
+  const [guest, staff] = await Promise.all([
+    db.collection('guests').findOne({ email }),
+    db.collection('staff').findOne({ email }),
+  ]);
+  const person = guest || staff;
+  if (
+    !person ||
+    typeof person.id !== 'string' ||
+    (staff && (staff.status !== 'Active' || !['Admin', 'Front Desk'].includes(staff.role)))
+  ) {
+    return res.status(401).json({ error: 'The email or password is incorrect.' });
+  }
+
+  let passwordValid = false;
+  if (guest) {
+    const credential = await db.collection('accounts').findOne({ guestId: guest.id });
+    passwordValid = verifyPassword(password, credential?.salt, credential?.digest);
+  } else if (staff.salt && staff.digest) {
+    passwordValid = verifyPassword(password, staff.salt, staff.digest);
+  } else if (typeof staff.password === 'string') {
+    const storedPassword = Buffer.from(staff.password);
+    const suppliedPassword = Buffer.from(password);
+    passwordValid =
+      storedPassword.length === suppliedPassword.length &&
+      crypto.timingSafeEqual(storedPassword, suppliedPassword);
+    if (passwordValid) {
+      const salt = generateSalt();
+      const digest = await hashPassword(password, salt);
+      await db
+        .collection('staff')
+        .updateOne({ _id: staff._id }, { $set: { salt, digest }, $unset: { password: '' } });
+    }
+  }
+  if (!passwordValid) return res.status(401).json({ error: 'The email or password is incorrect.' });
+
+  const user = cleanPerson({ ...person, role: guest ? 'Guest' : staff.role });
+  const identity = {
+    role: user.role,
+    ...(guest ? { guestId: guest.id } : { staffId: staff.id }),
+  };
+  if (user.twoFactorEnabled) {
+    loginChallenges.set(email, { identity, user, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return res.json({ requiresOtp: true, user });
+  }
+  res.json({
+    token: createAccessToken(identity, tokenSecret),
+    user,
+  });
+});
+
+app.get('/api/auth/me', authenticate, (req, res) => {
+  res.json({
+    user: {
+      name: req.auth.name,
+      role: req.auth.role,
+      ...(req.auth.guestId ? { guestId: req.auth.guestId } : { staffId: req.auth.staffId }),
+    },
+  });
+});
+
+app.get('/api/profile', authenticate, async (req, res) => {
+  const collection = req.auth.guestId ? 'guests' : 'staff';
+  const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
+  const profile = await db
+    .collection(collection)
+    .findOne(filter, { projection: { _id: 0, salt: 0, digest: 0, password: 0 } });
+  if (!profile) return res.status(404).json({ error: 'Profile not found.' });
+  res.json(profile);
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const profile = req.body.profile;
+  const password = req.body.password;
+  const ticket = verifiedRegistrationTickets.get(req.body.verificationToken);
+  if (!ticket || ticket.expiresAt <= Date.now()) {
+    verifiedRegistrationTickets.delete(req.body.verificationToken);
+    return res.status(401).json({ error: 'Verify your email before creating an account.' });
+  }
+  if (
+    !profile ||
+    typeof profile !== 'object' ||
+    typeof password !== 'string' ||
+    password.length < 8
+  ) {
+    return res
+      .status(400)
+      .json({ error: 'Provide valid guest details and a password of at least 8 characters.' });
+  }
+  const firstName = typeof profile.firstName === 'string' ? profile.firstName.trim() : '';
+  const lastName = typeof profile.lastName === 'string' ? profile.lastName.trim() : '';
+  const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
+  if (
+    !/^[a-zA-Z\s\-']{2,50}$/.test(firstName) ||
+    !/^[a-zA-Z\s\-']{2,50}$/.test(lastName) ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+    ticket.email !== email ||
+    typeof profile.phone !== 'string' ||
+    !/^\+63\s9\d{9}$/.test(profile.phone) ||
+    typeof profile.address !== 'string' ||
+    profile.address.length < 10 ||
+    profile.address.length > 200 ||
+    !/^[a-zA-Z0-9\s#\-']+$/.test(profile.address) ||
+    typeof profile.passport !== 'string' ||
+    !/^[a-zA-Z0-9]{5,20}$/.test(profile.passport)
+  ) {
+    return res.status(400).json({ error: 'Please provide valid guest profile details.' });
+  }
+
+  verifiedRegistrationTickets.delete(req.body.verificationToken);
+  if (await db.collection('staff').findOne({ email })) {
+    return res.status(409).json({ error: 'Email already registered.' });
+  }
+  const guestId = `G-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+  const salt = generateSalt();
+  const digest = await hashPassword(password, salt);
+  const guest = {
+    id: guestId,
+    firstName,
+    lastName,
+    email,
+    phone: profile.phone,
+    address: profile.address,
+    passport: profile.passport,
+    twoFactorEnabled: false,
+  };
+  const session = client.startSession();
   try {
-    const guest = req.body;
-    
-    // Server-side validation
-    if (!guest.firstName || guest.firstName.length < 2 || guest.firstName.length > 50 || !/^[a-zA-Z\s\-']+$/.test(guest.firstName)) {
-      return res.status(400).json({ error: 'Invalid first name' });
-    }
-    if (!guest.lastName || guest.lastName.length < 2 || guest.lastName.length > 50 || !/^[a-zA-Z\s\-']+$/.test(guest.lastName)) {
-      return res.status(400).json({ error: 'Invalid last name' });
-    }
-    if (!guest.email || guest.email.length < 5 || guest.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guest.email)) {
-      return res.status(400).json({ error: 'Invalid email' });
-    }
-    if (!guest.phone || guest.phone.length < 9) {
-      return res.status(400).json({ error: 'Invalid phone number' });
-    }
-    if (!guest.address || guest.address.length < 10 || guest.address.length > 200 || !/^[a-zA-Z0-9\s#\-']+$/.test(guest.address)) {
-      return res.status(400).json({ error: 'Invalid address' });
-    }
-    if (!guest.passport || guest.passport.length < 5 || guest.passport.length > 20 || !/^[a-zA-Z0-9]+$/.test(guest.passport)) {
-      return res.status(400).json({ error: 'Invalid ID/passport number' });
-    }
-    
-    // Check if email already exists
-    const existingGuest = await db.collection('guests').findOne({ 
-      email: guest.email.toLowerCase() 
-    });
-    
-    if (existingGuest) {
-      return res.status(400).json({ error: 'Email already registered' });
-    }
-    
-    // Ensure twoFactorEnabled field exists
-    if (guest.twoFactorEnabled === undefined) {
-      guest.twoFactorEnabled = false;
-    }
-    
-    // Insert new guest
-    const result = await db.collection('guests').insertOne(guest);
-    
-    res.status(201).json({ 
-      message: 'Guest account created successfully',
-      guestId: result.insertedId 
+    await session.withTransaction(async () => {
+      await db.collection('guests').insertOne(guest, { session });
+      await db.collection('accounts').insertOne({ guestId, salt, digest }, { session });
     });
   } catch (error) {
-    console.error('Error creating guest:', error);
-    res.status(500).json({ error: 'Failed to create guest account' });
+    if (error.code === 11000) return res.status(409).json({ error: 'Email already registered.' });
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+  const user = cleanPerson({ ...guest, role: 'Guest' });
+  res.status(201).json({
+    token: createAccessToken({ role: 'Guest', guestId }, tokenSecret),
+    user,
+    guest,
+  });
+});
+
+app.put('/api/auth/password', authenticate, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+    return res.status(400).json({ error: 'Password must be between 8 and 128 characters.' });
+  }
+  const collection = req.auth.guestId ? 'accounts' : 'staff';
+  const filter = req.auth.guestId ? { guestId: req.auth.guestId } : { id: req.auth.staffId };
+  const account = await db.collection(collection).findOne(filter);
+  if (!account || !verifyPassword(currentPassword, account.salt, account.digest)) {
+    return res.status(401).json({ error: 'Current password is incorrect.' });
+  }
+  const salt = generateSalt();
+  const digest = await hashPassword(newPassword, salt);
+  await db.collection(collection).updateOne(filter, { $set: { salt, digest } });
+  res.json({ message: 'Password updated successfully.' });
+});
+
+app.post('/api/auth/verify-password', authenticate, async (req, res) => {
+  const currentPassword = req.body.currentPassword;
+  const isGuest = Boolean(req.auth.guestId);
+  const account = isGuest
+    ? await db.collection('accounts').findOne({ guestId: req.auth.guestId })
+    : await db.collection('staff').findOne({ id: req.auth.staffId });
+  if (!account || !verifyPassword(currentPassword, account.salt, account.digest)) {
+    return res.status(401).json({ error: 'Current password is incorrect.' });
+  }
+  res.json({ verified: true });
+});
+
+app.patch('/api/profile', authenticate, async (req, res) => {
+  const updates = {};
+  if (req.auth.guestId) {
+    const { firstName, lastName, address, passport } = req.body;
+    if (firstName !== undefined) {
+      if (typeof firstName !== 'string' || !/^[a-zA-Z\s\-']{2,50}$/.test(firstName.trim())) {
+        return res.status(400).json({ error: 'Enter a valid first name.' });
+      }
+      updates.firstName = firstName.trim();
+    }
+    if (lastName !== undefined) {
+      if (typeof lastName !== 'string' || !/^[a-zA-Z\s\-']{2,50}$/.test(lastName.trim())) {
+        return res.status(400).json({ error: 'Enter a valid last name.' });
+      }
+      updates.lastName = lastName.trim();
+    }
+    if (address !== undefined) {
+      if (
+        typeof address !== 'string' ||
+        address.length < 10 ||
+        address.length > 200 ||
+        !/^[a-zA-Z0-9\s#\-']+$/.test(address)
+      ) {
+        return res.status(400).json({ error: 'Enter a valid address.' });
+      }
+      updates.address = address;
+    }
+    if (passport !== undefined) {
+      if (typeof passport !== 'string' || !/^[a-zA-Z0-9]{5,20}$/.test(passport)) {
+        return res.status(400).json({ error: 'Enter a valid ID or passport number.' });
+      }
+      updates.passport = passport;
+    }
+    if (req.body.email !== undefined) {
+      return res.status(400).json({ error: 'Email changes require verified account recovery.' });
+    }
+  }
+  if (typeof req.body.phone === 'string') {
+    const digits = req.body.phone.replace(/\D/g, '');
+    const phoneDigits = digits.startsWith('639') ? digits.slice(3) : digits;
+    if (phoneDigits.length !== 9) {
+      return res.status(400).json({ error: 'Phone number must contain exactly 9 digits.' });
+    }
+    updates.phone = `+63 9${phoneDigits}`;
+  }
+  if (typeof req.body.twoFactorEnabled === 'boolean') {
+    updates.twoFactorEnabled = req.body.twoFactorEnabled;
+  }
+  if (!Object.keys(updates).length) {
+    return res.status(400).json({ error: 'No valid profile changes were provided.' });
+  }
+  const collection = req.auth.guestId ? 'guests' : 'staff';
+  const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
+  await db.collection(collection).updateOne(filter, { $set: updates });
+  if (req.auth.guestId) {
+    const guest = await db.collection('guests').findOne(filter, { projection: { _id: 0 } });
+    return res.json({
+      message: 'Profile updated successfully.',
+      ...cleanPerson({ ...guest, role: 'Guest' }).profile,
+      twoFactorEnabled: guest.twoFactorEnabled === true,
+    });
+  }
+  res.json({ message: 'Profile updated successfully.', ...updates });
+});
+
+app.get('/api/rooms', async (req, res) => {
+  const result = await loadAvailableRooms({
+    type: req.query.type,
+    guests: req.query.guests,
+    checkIn: req.query.checkIn,
+    checkOut: req.query.checkOut,
+  });
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result.rooms);
+});
+
+app.get('/api/rooms/:id', async (req, res) => {
+  const room = await db.collection('rooms').findOne({ id: req.params.id });
+  if (!room || room.status === 'Inactive')
+    return res.status(404).json({ error: 'Room not found.' });
+  res.json(safeRoom(room));
+});
+
+app.post('/api/rooms', authenticate, allowRoles('Admin'), async (req, res) => {
+  const invalid = validateRoom(req.body);
+  if (invalid) return res.status(400).json({ error: invalid });
+  const room = {
+    ...req.body,
+    id: `R-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
+    number: req.body.number.trim(),
+    price: Number(req.body.price),
+    capacity: Number(req.body.capacity),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    await db.collection('rooms').insertOne(room);
+  } catch (error) {
+    if (error.code === 11000)
+      return res.status(409).json({ error: 'That room number already exists.' });
+    throw error;
+  }
+  res.status(201).json(safeRoom(room));
+});
+
+app.put('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) => {
+  const invalid = validateRoom(req.body);
+  if (invalid) return res.status(400).json({ error: invalid });
+  const room = await db.collection('rooms').findOne({ id: req.params.id });
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  const activeFilter = {
+    roomId: room.id,
+    status: { $in: ACTIVE_RESERVATION_STATUSES },
+    checkOut: { $gt: hotelToday() },
+  };
+  const active =
+    req.body.status === 'Maintenance' || req.body.status === 'Inactive'
+      ? await db.collection('reservations').findOne(activeFilter)
+      : await db.collection('reservations').findOne({
+          ...activeFilter,
+          guests: { $gt: Number(req.body.capacity) },
+        });
+  if ((req.body.status === 'Maintenance' || req.body.status === 'Inactive') && active) {
+    return res.status(409).json({ error: 'Reassign or cancel active reservations first.' });
+  }
+  if (req.body.status !== 'Maintenance' && req.body.status !== 'Inactive' && active) {
+    return res
+      .status(409)
+      .json({ error: 'Room capacity cannot be lower than an active reservation.' });
+  }
+  const updated = {
+    ...req.body,
+    id: room.id,
+    number: req.body.number.trim(),
+    price: Number(req.body.price),
+    capacity: Number(req.body.capacity),
+    createdAt: room.createdAt,
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    await db.collection('rooms').replaceOne({ id: room.id }, updated);
+  } catch (error) {
+    if (error.code === 11000)
+      return res.status(409).json({ error: 'That room number already exists.' });
+    throw error;
+  }
+  res.json(safeRoom(updated));
+});
+
+app.patch('/api/rooms/:id/status', authenticate, allowRoles('Admin'), async (req, res) => {
+  const { status } = req.body;
+  if (!['Available', 'Maintenance', 'Inactive'].includes(status)) {
+    return res.status(400).json({ error: 'Choose a valid room status.' });
+  }
+  const room = await db.collection('rooms').findOne({ id: req.params.id });
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  if (status === 'Maintenance' || status === 'Inactive') {
+    const active = await db.collection('reservations').findOne({
+      roomId: room.id,
+      status: { $in: ACTIVE_RESERVATION_STATUSES },
+      checkOut: { $gt: hotelToday() },
+    });
+    if (active)
+      return res.status(409).json({ error: 'Reassign or cancel active reservations first.' });
+  }
+  const updated = { ...room, status, updatedAt: new Date().toISOString() };
+  await db
+    .collection('rooms')
+    .updateOne({ id: room.id }, { $set: { status, updatedAt: updated.updatedAt } });
+  res.json(safeRoom(updated));
+});
+
+app.get('/api/reservations', authenticate, async (req, res) => {
+  const filter = req.auth.guestId ? { guestId: req.auth.guestId } : {};
+  const reservations = await db
+    .collection('reservations')
+    .find(filter)
+    .sort({ createdAt: -1 })
+    .toArray();
+  res.json(reservations.map(safeReservation));
+});
+
+app.get('/api/payments', authenticate, async (req, res) => {
+  let filter = {};
+  if (req.auth.guestId) {
+    const ownedReservations = await db
+      .collection('reservations')
+      .find({ guestId: req.auth.guestId }, { projection: { id: 1 } })
+      .toArray();
+    filter = { bookingId: { $in: ownedReservations.map((booking) => booking.id) } };
+  }
+  const payments = await db
+    .collection('payments')
+    .find(filter)
+    .project({ _id: 0 })
+    .sort({ date: -1 })
+    .toArray();
+  res.json(payments);
+});
+
+app.post('/api/payments', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const bookingId = req.body.bookingId;
+  const amount = Number(req.body.amount);
+  const method = req.body.method;
+  if (
+    typeof bookingId !== 'string' ||
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    Math.round(amount * 100) !== amount * 100 ||
+    !['Cash', 'Card', 'Other'].includes(method)
+  ) {
+    return res
+      .status(400)
+      .json({ error: 'Provide a valid reservation, payment amount, and method.' });
+  }
+  const session = client.startSession();
+  const payment = {
+    id: `PAY-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+    bookingId,
+    amount: Math.round(amount * 100) / 100,
+    method,
+    date: hotelToday(),
+  };
+  try {
+    await session.withTransaction(async () => {
+      const booking = await db.collection('reservations').findOne({ id: bookingId }, { session });
+      if (!booking) throw requestError(404, 'Reservation not found.');
+      if (['Cancelled', 'Checked-out'].includes(booking.status)) {
+        throw requestError(409, 'Payments cannot be recorded for this reservation.');
+      }
+      await db
+        .collection('reservations')
+        .updateOne({ id: bookingId }, { $inc: { paymentVersion: 1 } }, { session });
+      const existing = await db.collection('payments').find({ bookingId }, { session }).toArray();
+      const paid = existing.reduce((sum, record) => sum + Number(record.amount), 0);
+      const balance = Math.round((stayTotal(booking) - paid) * 100) / 100;
+      if (amount > balance) throw requestError(409, 'Payment exceeds the remaining balance.');
+      await db.collection('payments').insertOne(payment, { session });
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+  res.status(201).json(payment);
+});
+
+app.post('/api/reservations', authenticate, async (req, res) => {
+  const { roomId, checkIn, checkOut } = req.body;
+  const guestId = req.auth.guestId || req.body.guestId;
+  const guests = Number(req.body.guests);
+  if (!roomId || !validStayDates(checkIn, checkOut) || checkIn < hotelToday()) {
+    return res
+      .status(400)
+      .json({ error: 'Choose a valid room and future check-in/check-out dates.' });
+  }
+  if (!Number.isInteger(guests) || guests < 1 || guests > 20) {
+    return res.status(400).json({ error: 'Guest count must be between 1 and 20.' });
+  }
+  const guest = await db.collection('guests').findOne({ id: guestId }, { projection: { _id: 0 } });
+  if (!guest) return res.status(400).json({ error: 'Select a valid guest profile.' });
+
+  const reservation = {
+    id: `AH-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+    guestId,
+    roomId,
+    checkIn,
+    checkOut,
+    guests,
+    status: 'Pending',
+    createdAt: new Date().toISOString(),
+  };
+  const session = client.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const room = await db.collection('rooms').findOne({ id: roomId }, { session });
+      if (!room || room.status === 'Inactive') throw requestError(404, 'Room not found.');
+      if (room.status !== 'Available') throw requestError(409, 'This room is not available.');
+      if (room.capacity < guests)
+        throw requestError(400, 'This room does not have enough capacity.');
+      const claim = await db
+        .collection('rooms')
+        .updateOne(
+          { id: roomId, status: 'Available' },
+          { $inc: { reservationVersion: 1 } },
+          { session },
+        );
+      if (claim.modifiedCount !== 1) throw requestError(409, 'This room is no longer available.');
+      if (!(await checkStayAvailability(room, checkIn, checkOut, session))) {
+        throw requestError(409, 'This room is no longer available for those dates.');
+      }
+      reservation.rate = room.price;
+      await db.collection('reservations').insertOne(reservation, { session });
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+  res.status(201).json(safeReservation(reservation));
+});
+
+app.put('/api/reservations/:id', authenticate, async (req, res) => {
+  const existing = await db.collection('reservations').findOne({ id: req.params.id });
+  if (!existing) return res.status(404).json({ error: 'Reservation not found.' });
+  if (req.auth.role === 'Guest' || !['Admin', 'Front Desk'].includes(req.auth.role)) {
+    return res.status(403).json({ error: 'You are not allowed to edit this reservation.' });
+  }
+  if (!['Pending', 'Confirmed'].includes(existing.status)) {
+    return res.status(409).json({ error: 'Only pending or confirmed reservations can be edited.' });
+  }
+  const { roomId, checkIn, checkOut } = req.body;
+  const guests = Number(req.body.guests);
+  if (!roomId || !validStayDates(checkIn, checkOut) || checkIn < hotelToday()) {
+    return res.status(400).json({ error: 'Choose valid future check-in/check-out dates.' });
+  }
+  if (!Number.isInteger(guests) || guests < 1 || guests > 20) {
+    return res.status(400).json({ error: 'Guest count must be between 1 and 20.' });
+  }
+  const session = client.startSession();
+  let updated;
+  try {
+    await session.withTransaction(async () => {
+      const room = await db.collection('rooms').findOne({ id: roomId }, { session });
+      if (!room || room.status !== 'Available')
+        throw requestError(409, 'Choose an available room.');
+      if (room.capacity < guests)
+        throw requestError(400, 'This room does not have enough capacity.');
+      const claim = await db
+        .collection('rooms')
+        .updateOne(
+          { id: roomId, status: 'Available' },
+          { $inc: { reservationVersion: 1 } },
+          { session },
+        );
+      if (claim.modifiedCount !== 1) throw requestError(409, 'This room is no longer available.');
+      if (!(await checkStayAvailability(room, checkIn, checkOut, session, existing.id))) {
+        throw requestError(409, 'This room is no longer available for those dates.');
+      }
+      updated = {
+        ...existing,
+        roomId,
+        checkIn,
+        checkOut,
+        guests,
+        rate: room.id === existing.roomId ? existing.rate : room.price,
+        updatedAt: new Date().toISOString(),
+      };
+      const paid = await db
+        .collection('payments')
+        .find({ bookingId: existing.id }, { session })
+        .toArray();
+      if (stayTotal(updated) < paid.reduce((sum, payment) => sum + Number(payment.amount), 0)) {
+        throw requestError(409, 'The revised total is below the amount already paid.');
+      }
+      await db.collection('reservations').replaceOne({ id: existing.id }, updated, { session });
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+  res.json(safeReservation(updated));
+});
+
+app.patch('/api/reservations/:id/status', authenticate, async (req, res) => {
+  const { status } = req.body;
+  const booking = await db.collection('reservations').findOne({ id: req.params.id });
+  if (!booking) return res.status(404).json({ error: 'Reservation not found.' });
+  if (req.auth.role === 'Guest') {
+    if (booking.guestId !== req.auth.guestId || status !== 'Cancelled') {
+      return res.status(403).json({ error: 'You are not allowed to change this reservation.' });
+    }
+  } else if (!['Admin', 'Front Desk'].includes(req.auth.role)) {
+    return res.status(403).json({ error: 'You are not allowed to change this reservation.' });
+  }
+  if (!['Pending', 'Confirmed', 'Checked-in', 'Checked-out', 'Cancelled'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid reservation status.' });
+  }
+  const transitions = {
+    Pending: ['Confirmed', 'Cancelled'],
+    Confirmed: ['Checked-in', 'Cancelled'],
+    'Checked-in': ['Checked-out'],
+    'Checked-out': [],
+    Cancelled: [],
+  };
+  if (!transitions[booking.status]?.includes(status)) {
+    return res.status(409).json({ error: 'That reservation status change is not allowed.' });
+  }
+  if (
+    status === 'Checked-in' &&
+    (booking.checkIn > hotelToday() || booking.checkOut <= hotelToday())
+  ) {
+    return res.status(409).json({ error: 'Check-in is only available during the stay dates.' });
+  }
+  if (status === 'Checked-in') {
+    const otherStay = await db.collection('reservations').findOne({
+      id: { $ne: booking.id },
+      roomId: booking.roomId,
+      status: 'Checked-in',
+    });
+    if (otherStay) return res.status(409).json({ error: 'This room is already occupied.' });
+  }
+  if (status === 'Checked-out') {
+    const payments = await db.collection('payments').find({ bookingId: booking.id }).toArray();
+    const paid = payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+    if (paid < stayTotal(booking)) {
+      return res.status(409).json({ error: 'Settle the reservation balance before checkout.' });
+    }
+  }
+  const updatedAt = new Date().toISOString();
+  const update = await db
+    .collection('reservations')
+    .updateOne(
+      { id: booking.id, status: booking.status },
+      { $set: { status, updatedAt }, $inc: { paymentVersion: 1 } },
+    );
+  if (update.modifiedCount !== 1) {
+    return res
+      .status(409)
+      .json({ error: 'Reservation changed before this update could be applied.' });
+  }
+  res.json({ ...safeReservation(booking), status, updatedAt });
+});
+
+// Create guest account
+app.post('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  try {
+    const guest = req.body;
+    const error = validateGuestProfile(guest);
+    if (error) return res.status(400).json({ error });
+    const email = guest.email.trim().toLowerCase();
+    const [existingGuest, existingStaff] = await Promise.all([
+      db.collection('guests').findOne({ email }),
+      db.collection('staff').findOne({ email }),
+    ]);
+    if (existingGuest || existingStaff) {
+      return res.status(409).json({ error: 'Email already registered.' });
+    }
+    const saved = {
+      id: `G-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
+      firstName: guest.firstName.trim(),
+      lastName: guest.lastName.trim(),
+      email,
+      phone: guest.phone,
+      address: guest.address,
+      passport: guest.passport,
+      twoFactorEnabled: false,
+    };
+    await db.collection('guests').insertOne(saved);
+    res.status(201).json(saved);
+  } catch (error) {
+    if (error.code === 11000) return res.status(409).json({ error: 'Email already registered.' });
+    throw error;
   }
 });
 
 // Get all guests
-app.get('/api/guests', async (req, res) => {
+app.get('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
   try {
-    const guests = await db.collection('guests').find({}).toArray();
+    const guests = await db.collection('guests').find({}).project({ _id: 0 }).toArray();
     res.json(guests);
   } catch (error) {
     console.error('Error fetching guests:', error);
@@ -153,63 +944,57 @@ app.get('/api/guests', async (req, res) => {
   }
 });
 
-// Create account credential
-app.post('/api/accounts', async (req, res) => {
-  try {
-    const credential = req.body;
-    
-    // Check if guestId already has an account
-    const existingAccount = await db.collection('accounts').findOne({ 
-      guestId: credential.guestId 
-    });
-    
-    if (existingAccount) {
-      return res.status(400).json({ error: 'Account already exists for this guest' });
-    }
-    
-    // Insert new credential
-    const result = await db.collection('accounts').insertOne(credential);
-    
-    res.status(201).json({ 
-      message: 'Account credential created successfully',
-      accountId: result.insertedId 
-    });
-  } catch (error) {
-    console.error('Error creating account credential:', error);
-    res.status(500).json({ error: 'Failed to create account credential' });
+app.put('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const error = validateGuestProfile(req.body);
+  if (error) return res.status(400).json({ error });
+  const { id } = req.params;
+  const email = req.body.email.trim().toLowerCase();
+  const [duplicateGuest, duplicateStaff] = await Promise.all([
+    db.collection('guests').findOne({ id: { $ne: id }, email }),
+    db.collection('staff').findOne({ email }),
+  ]);
+  if (duplicateGuest || duplicateStaff) {
+    return res.status(409).json({ error: 'Email already registered.' });
   }
+  const updates = {
+    firstName: req.body.firstName.trim(),
+    lastName: req.body.lastName.trim(),
+    email,
+    phone: req.body.phone,
+    address: req.body.address,
+    passport: req.body.passport,
+  };
+  const result = await db.collection('guests').updateOne({ id }, { $set: updates });
+  if (result.matchedCount === 0) return res.status(404).json({ error: 'Guest not found.' });
+  res.json({ id, ...updates });
 });
 
-// Get account by guestId
-app.get('/api/accounts/:guestId', async (req, res) => {
-  try {
-    const { guestId } = req.params;
-    const account = await db.collection('accounts').findOne({ guestId });
-
-    if (!account) {
-      return res.status(404).json({ error: 'Account not found' });
-    }
-
-    res.json(account);
-  } catch (error) {
-    console.error('Error fetching account:', error);
-    res.status(500).json({ error: 'Failed to fetch account' });
+function validateGuestProfile(guest) {
+  if (
+    !guest ||
+    typeof guest.firstName !== 'string' ||
+    !/^[a-zA-Z\s\-']{2,50}$/.test(guest.firstName.trim()) ||
+    typeof guest.lastName !== 'string' ||
+    !/^[a-zA-Z\s\-']{2,50}$/.test(guest.lastName.trim()) ||
+    typeof guest.email !== 'string' ||
+    guest.email.length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guest.email.trim()) ||
+    typeof guest.phone !== 'string' ||
+    !/^\+63\s9\d{9}$/.test(guest.phone) ||
+    typeof guest.address !== 'string' ||
+    guest.address.length < 10 ||
+    guest.address.length > 200 ||
+    !/^[a-zA-Z0-9\s#\-']+$/.test(guest.address) ||
+    typeof guest.passport !== 'string' ||
+    !/^[a-zA-Z0-9]{5,20}$/.test(guest.passport)
+  ) {
+    return 'Please provide valid guest details.';
   }
-});
-
-// Get all accounts
-app.get('/api/accounts', async (req, res) => {
-  try {
-    const accounts = await db.collection('accounts').find({}).toArray();
-    res.json(accounts);
-  } catch (error) {
-    console.error('Error fetching accounts:', error);
-    res.status(500).json({ error: 'Failed to fetch accounts' });
-  }
-});
+  return null;
+}
 
 // Create staff account
-app.post('/api/staff', async (req, res) => {
+app.post('/api/staff', authenticate, allowRoles('Admin'), async (req, res) => {
   try {
     const staff = req.body;
 
@@ -218,7 +1003,9 @@ app.post('/api/staff', async (req, res) => {
       return res.status(400).json({ error: 'Name must be between 2 and 50 characters' });
     }
     if (!/^[a-zA-Z\-'\s]+$/.test(staff.name)) {
-      return res.status(400).json({ error: 'Name can only contain letters, hyphens, apostrophes, and spaces' });
+      return res
+        .status(400)
+        .json({ error: 'Name can only contain letters, hyphens, apostrophes, and spaces' });
     }
     if (!staff.email || staff.email.length < 5 || staff.email.length > 254) {
       return res.status(400).json({ error: 'Email must be between 5 and 254 characters' });
@@ -241,12 +1028,13 @@ app.post('/api/staff', async (req, res) => {
     }
 
     // Check if email already exists
-    const existingStaff = await db.collection('staff').findOne({
-      email: staff.email.toLowerCase()
-    });
-
-    if (existingStaff) {
-      return res.status(400).json({ error: 'Email already registered' });
+    const email = staff.email.trim().toLowerCase();
+    const [existingGuest, existingStaff] = await Promise.all([
+      db.collection('guests').findOne({ email }),
+      db.collection('staff').findOne({ email }),
+    ]);
+    if (existingGuest || existingStaff) {
+      return res.status(409).json({ error: 'Email already registered' });
     }
 
     // Generate temporary password
@@ -279,7 +1067,7 @@ app.post('/api/staff', async (req, res) => {
 
     res.status(201).json({
       message: 'Staff account created successfully',
-      staffId: result.insertedId
+      staffId: result.insertedId,
     });
   } catch (error) {
     console.error('Error creating staff:', error);
@@ -289,36 +1077,21 @@ app.post('/api/staff', async (req, res) => {
 
 // Helper functions for password generation and hashing
 function generateTempPassword() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-  let password = '';
-  for (let i = 0; i < 12; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return password;
-}
-
-function generateSalt() {
-  return crypto.randomBytes(16).toString('hex');
-}
-
-async function hashPassword(password, salt) {
-  const iterations = 100000;
-  const keyLength = 32;
-  const digest = 'sha256';
-  return crypto.pbkdf2Sync(password, salt, iterations, keyLength, digest).toString('hex');
+  return crypto.randomBytes(18).toString('base64url');
 }
 
 // OTP storage (in-memory, expires after 5 minutes)
 const otpStore = new Map();
+const loginChallenges = new Map();
+const verifiedRegistrationTickets = new Map();
 
 function generateOTP() {
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  return otp;
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
-function storeOTP(email, otp) {
+function storeOTP(email, otp, purpose) {
   const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute (60 seconds)
-  otpStore.set(email.toLowerCase(), { otp, expiresAt });
+  otpStore.set(email.toLowerCase(), { otp, purpose, expiresAt });
 }
 
 function verifyOTP(email, otp) {
@@ -328,7 +1101,7 @@ function verifyOTP(email, otp) {
     otpStore.delete(email.toLowerCase());
     return false;
   }
-  return stored.otp === otp;
+  return stored.otp === otp ? stored : false;
 }
 
 async function sendOTPEmail(email, otp, purpose) {
@@ -361,9 +1134,13 @@ async function sendOTPEmail(email, otp, purpose) {
 }
 
 // Get all staff
-app.get('/api/staff', async (req, res) => {
+app.get('/api/staff', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
   try {
-    const staff = await db.collection('staff').find({}).toArray();
+    const staff = await db
+      .collection('staff')
+      .find({})
+      .project({ _id: 0, salt: 0, digest: 0, password: 0 })
+      .toArray();
     res.json(staff);
   } catch (error) {
     console.error('Error fetching staff:', error);
@@ -372,19 +1149,22 @@ app.get('/api/staff', async (req, res) => {
 });
 
 // Update staff account
-app.put('/api/staff/:id', async (req, res) => {
+app.put('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const staff = req.body;
 
     // Check if email already exists for another staff member
     const existingStaff = await db.collection('staff').findOne({
-      email: staff.email.toLowerCase(),
-      id: { $ne: id }
+      email: staff.email.trim().toLowerCase(),
+      id: { $ne: id },
+    });
+    const existingGuest = await db.collection('guests').findOne({
+      email: staff.email.trim().toLowerCase(),
     });
 
-    if (existingStaff) {
-      return res.status(400).json({ error: 'Email already registered' });
+    if (existingStaff || existingGuest) {
+      return res.status(409).json({ error: 'Email already registered' });
     }
 
     // Filter out MongoDB-specific fields and password hash (keep those as-is)
@@ -399,17 +1179,14 @@ app.put('/api/staff/:id', async (req, res) => {
     }
 
     // Update staff
-    const result = await db.collection('staff').updateOne(
-      { id },
-      { $set: updateFields }
-    );
+    const result = await db.collection('staff').updateOne({ id }, { $set: updateFields });
 
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: 'Staff member not found' });
     }
 
     res.json({
-      message: 'Staff account updated successfully'
+      message: 'Staff account updated successfully',
     });
   } catch (error) {
     console.error('Error updating staff:', error);
@@ -418,7 +1195,7 @@ app.put('/api/staff/:id', async (req, res) => {
 });
 
 // Delete staff account
-app.delete('/api/staff/:id', async (req, res) => {
+app.delete('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -435,7 +1212,7 @@ app.delete('/api/staff/:id', async (req, res) => {
     }
 
     res.json({
-      message: 'Staff account deleted successfully'
+      message: 'Staff account deleted successfully',
     });
   } catch (error) {
     console.error('Error deleting staff:', error);
@@ -443,47 +1220,9 @@ app.delete('/api/staff/:id', async (req, res) => {
   }
 });
 
-// Update staff password
-app.put('/api/staff/:id/password', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { currentPassword, newPassword } = req.body;
-
-    // Get current staff
-    const staff = await db.collection('staff').findOne({ id });
-    if (!staff) {
-      return res.status(404).json({ error: 'Staff member not found' });
-    }
-
-    // Verify current password
-    const salt = staff.salt;
-    const digest = await hashPassword(currentPassword, salt);
-    if (digest !== staff.digest) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    }
-
-    // Hash new password
-    const newSalt = generateSalt();
-    const newDigest = await hashPassword(newPassword, newSalt);
-
-    // Update password
-    await db.collection('staff').updateOne(
-      { id },
-      { $set: { salt: newSalt, digest: newDigest } }
-    );
-
-    res.json({
-      message: 'Password updated successfully'
-    });
-  } catch (error) {
-    console.error('Error updating password:', error);
-    res.status(500).json({ error: 'Failed to update password' });
-  }
-});
-
 // Generate reset token
 function generateResetToken() {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  return crypto.randomBytes(32).toString('base64url');
 }
 
 // Store reset tokens with expiration
@@ -542,46 +1281,40 @@ async function sendResetEmail(email, token) {
 app.post('/api/reset-password', async (req, res) => {
   try {
     const { token, password } = req.body;
-    
+
     if (!token || !password) {
       return res.status(400).json({ error: 'Token and password are required' });
     }
-    
+
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
-    
+
     // Verify token
     const email = verifyResetToken(token);
     if (!email) {
       return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
-    
+
     // Hash new password
     const salt = generateSalt();
     const digest = await hashPassword(password, salt);
-    
+
     // Update guest password if exists
     const guest = await db.collection('guests').findOne({ email });
     if (guest) {
-      await db.collection('accounts').updateOne(
-        { guestId: guest.id },
-        { $set: { salt, digest } }
-      );
+      await db.collection('accounts').updateOne({ guestId: guest.id }, { $set: { salt, digest } });
     }
-    
+
     // Update staff password if exists
     const staff = await db.collection('staff').findOne({ email });
     if (staff) {
-      await db.collection('staff').updateOne(
-        { email },
-        { $set: { salt, digest } }
-      );
+      await db.collection('staff').updateOne({ email }, { $set: { salt, digest } });
     }
-    
+
     // Delete used token
     resetTokenStore.delete(token);
-    
+
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
     console.error('Error resetting password:', error);
@@ -593,30 +1326,30 @@ app.post('/api/reset-password', async (req, res) => {
 app.post('/api/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
-    
+
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
-    
+
     const normalizedEmail = email.toLowerCase();
-    
+
     // Check in guests collection
     const guest = await db.collection('guests').findOne({ email: normalizedEmail });
-    
+
     // Check in staff collection
     const staff = await db.collection('staff').findOne({ email: normalizedEmail });
-    
+
     if (!guest && !staff) {
       return res.status(404).json({ error: 'No account found with this email address.' });
     }
-    
+
     // Generate and store reset token
     const token = generateResetToken();
     storeResetToken(normalizedEmail, token);
-    
+
     // Send reset email
     const emailSent = await sendResetEmail(normalizedEmail, token);
-    
+
     if (emailSent) {
       res.json({ message: 'Password reset email sent successfully' });
     } else {
@@ -636,9 +1369,20 @@ app.post('/api/otp/send', async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
+    const normalizedEmail = email.toLowerCase();
+    if (
+      purpose === 'Login Verification' &&
+      (!loginChallenges.has(normalizedEmail) ||
+        loginChallenges.get(normalizedEmail).expiresAt <= Date.now())
+    ) {
+      loginChallenges.delete(normalizedEmail);
+      return res
+        .status(400)
+        .json({ error: 'Sign in again before requesting a verification code.' });
+    }
 
     const otp = generateOTP();
-    storeOTP(email, otp);
+    storeOTP(normalizedEmail, otp, purpose);
 
     const emailSent = await sendOTPEmail(email, otp, purpose);
 
@@ -662,11 +1406,34 @@ app.post('/api/otp/verify', async (req, res) => {
       return res.status(400).json({ error: 'Email and OTP are required' });
     }
 
-    const isValid = verifyOTP(email, otp);
+    const verified = verifyOTP(email, otp);
 
-    if (isValid) {
+    if (verified) {
       // Clear OTP after successful verification
       otpStore.delete(email.toLowerCase());
+      if (verified.purpose === 'Login Verification') {
+        const challenge = loginChallenges.get(email.toLowerCase());
+        loginChallenges.delete(email.toLowerCase());
+        if (!challenge || challenge.expiresAt <= Date.now()) {
+          return res.status(400).json({ error: 'Sign in again to verify your account.' });
+        }
+        return res.json({
+          message: 'OTP verified successfully',
+          token: createAccessToken(challenge.identity, tokenSecret),
+          user: challenge.user,
+        });
+      }
+      if (verified.purpose === 'Account Creation') {
+        const registrationToken = crypto.randomBytes(32).toString('base64url');
+        verifiedRegistrationTickets.set(registrationToken, {
+          email: email.toLowerCase(),
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+        return res.json({
+          message: 'OTP verified successfully',
+          registrationToken,
+        });
+      }
       res.json({ message: 'OTP verified successfully' });
     } else {
       res.status(400).json({ error: 'Invalid or expired OTP' });
@@ -682,9 +1449,23 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Server is running' });
 });
 
-// Start server
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+app.use((error, req, res, next) => {
+  console.error('Unhandled API error:', error);
+  if (res.headersSent) return next(error);
+  res.status(error.status || 500).json({
+    error: error.status ? error.message : 'An unexpected server error occurred.',
+  });
+});
+
+async function startServer() {
+  await connectToDatabase();
+  app.listen(port, () => console.log(`Server running on port ${port}`));
+}
+
+startServer().catch((error) => {
+  console.error('Server startup failed:', error);
+  client.close().catch((closeError) => console.error('MongoDB shutdown failed:', closeError));
+  process.exitCode = 1;
 });
 
 // Graceful shutdown

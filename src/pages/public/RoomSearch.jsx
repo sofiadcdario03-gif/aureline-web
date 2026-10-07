@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, Leaf } from 'lucide-react';
 import { day, nights, photos } from '../../data';
+import api from '../../services/api';
 import { readStaySearch } from '../../utils/searchParams';
 import Empty from '../../components/ui/Empty';
 import Field from '../../components/ui/Field';
@@ -15,6 +16,8 @@ export default function RoomSearch(hotel) {
   const [end, setEnd] = useState(query?.end || day(2));
   const [count, setCount] = useState(query?.count || 2);
   const [error, setError] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
   const types = ['All rooms', 'Single', 'Double', 'Deluxe', 'Suite'];
   const type = types.includes(params.get('type')) ? params.get('type') : 'All rooms';
   useEffect(() => {
@@ -26,14 +29,39 @@ export default function RoomSearch(hotel) {
     }
     setError('');
   }, [params]);
-  const results = query
-    ? hotel.rooms.filter(
-        (room) =>
-          room.capacity >= query.count &&
-          hotel.available(room, query.start, query.end) &&
-          (type === 'All rooms' || room.type === type),
-      )
-    : [];
+  useEffect(() => {
+    if (!query) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setResults([]);
+    setLoading(true);
+    api
+      .get('/rooms', {
+        params: {
+          checkIn: query.start,
+          checkOut: query.end,
+          guests: query.count,
+          ...(type !== 'All rooms' ? { type } : {}),
+        },
+      })
+      .then(({ data }) => {
+        if (active) setResults(data);
+      })
+      .catch((requestError) => {
+        if (!active) return;
+        setResults([]);
+        setError(requestError.response?.data?.error || 'Room availability could not be checked.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [query?.start, query?.end, query?.count, type]);
 
   function search(event) {
     event.preventDefault();
@@ -112,8 +140,8 @@ export default function RoomSearch(hotel) {
         <>
           <div className="results-heading">
             <span>
-              <strong>{results.length} rooms</strong> for your {nights(query.start, query.end)}
-              -night stay · {query.start} → {query.end}
+              <strong>{loading ? 'Checking' : results.length} rooms</strong> for your{' '}
+              {nights(query.start, query.end)}-night stay · {query.start} → {query.end}
             </span>
             <select
               aria-label="Filter room types"
@@ -140,7 +168,7 @@ export default function RoomSearch(hotel) {
               />
             ))}
           </div>
-          {!results.length && (
+          {!loading && !results.length && (
             <Empty
               text="A different date, perhaps?"
               detail="No rooms are available for this selection. Try another date or guest count."

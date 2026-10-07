@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 
 import { day, money } from '../../data.js';
+import api from '../../services/api.js';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
 
@@ -13,7 +14,7 @@ export default function EditBooking({ item, onClose, ...c }) {
   return (
     <Modal title="Update your stay" subtitle={item.id} onClose={onClose}>
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           const r = c.room(data.roomId);
           if (data.checkOut <= data.checkIn) return c.notify('Check-out must be after check-in.');
@@ -23,18 +24,24 @@ export default function EditBooking({ item, onClose, ...c }) {
             !c.available(r, data.checkIn, data.checkOut, item.id)
           )
             return c.notify('Choose an available room with enough capacity.');
+          const update = { ...data, guests: Number(data.guests) };
           const updated = {
-            ...data,
-            guests: Number(data.guests),
+            ...item,
+            ...update,
             rate: r.id === item.roomId ? item.rate : r.price,
           };
           if (c.total(updated) < c.paid(item))
             return c.notify(
               'The revised total is below the amount paid. Contact the front desk to arrange a refund first.',
             );
-          c.setBookings(c.bookings.map((b) => (b.id === item.id ? updated : b)));
-          onClose();
-          c.notify('Reservation updated.');
+          try {
+            const { data: saved } = await api.put(`/reservations/${item.id}`, update);
+            c.setBookings(c.bookings.map((b) => (b.id === item.id ? saved : b)));
+            onClose();
+            c.notify('Reservation updated.');
+          } catch (error) {
+            c.notify(error.response?.data?.error || 'Reservation could not be updated.');
+          }
         }}
       >
         <div className="form-grid">

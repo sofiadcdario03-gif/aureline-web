@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import api from '../../services/api';
 import Modal from '../ui/Modal.jsx';
 
 export default function OTPModal({ email, purpose, onVerified, onClose }) {
@@ -28,7 +28,7 @@ export default function OTPModal({ email, purpose, onVerified, onClose }) {
 
   const sendOTP = async () => {
     try {
-      await axios.post('http://localhost:5000/api/otp/send', {
+      await api.post('/otp/send', {
         email,
         purpose,
       });
@@ -83,13 +83,13 @@ export default function OTPModal({ email, purpose, onVerified, onClose }) {
 
     setBusy(true);
     try {
-      const response = await axios.post('http://localhost:5000/api/otp/verify', {
+      const { data } = await api.post('/otp/verify', {
         email,
         otp: otpValue,
       });
 
-      if (response.data.message === 'OTP verified successfully') {
-        onVerified();
+      if (data.message === 'OTP verified successfully') {
+        await onVerified(data);
         onClose();
       }
     } catch (err) {
@@ -99,10 +99,14 @@ export default function OTPModal({ email, purpose, onVerified, onClose }) {
     }
   };
 
-  const isComplete = otp.every(digit => digit !== '');
+  const isComplete = otp.every((digit) => digit !== '');
 
   return (
-    <Modal title="Verify your email" subtitle={`Enter the 6-digit code sent to ${email}`} onClose={onClose}>
+    <Modal
+      title="Verify your email"
+      subtitle={`Enter the 6-digit code sent to ${email}`}
+      onClose={onClose}
+    >
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '20px' }}>
         {otp.map((digit, index) => (
           <input
@@ -128,12 +132,19 @@ export default function OTPModal({ email, purpose, onVerified, onClose }) {
         ))}
       </div>
 
-      {error && <p className="form-error" style={{ textAlign: 'center' }}>{error}</p>}
+      {error && (
+        <p className="form-error" style={{ textAlign: 'center' }}>
+          {error}
+        </p>
+      )}
 
       <div style={{ textAlign: 'center', marginBottom: '20px' }}>
         {timeLeft > 0 ? (
           <p style={{ color: '#666' }}>
-            Code expires in <strong>{Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}</strong>
+            Code expires in{' '}
+            <strong>
+              {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+            </strong>
           </p>
         ) : (
           <button
@@ -152,11 +163,7 @@ export default function OTPModal({ email, purpose, onVerified, onClose }) {
         <button type="button" className="button secondary" onClick={onClose}>
           Cancel
         </button>
-        <button
-          className="button primary"
-          onClick={handleVerify}
-          disabled={busy || !isComplete}
-        >
+        <button className="button primary" onClick={handleVerify} disabled={busy || !isComplete}>
           {busy ? 'Verifying...' : 'Verify'}
         </button>
       </div>
