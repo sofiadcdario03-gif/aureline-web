@@ -944,6 +944,18 @@ app.get('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (r
   }
 });
 
+// Get single guest by ID
+app.get('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  try {
+    const guest = await db.collection('guests').findOne({ id: req.params.id }, { projection: { _id: 0 } });
+    if (!guest) return res.status(404).json({ error: 'Guest not found.' });
+    res.json(guest);
+  } catch (error) {
+    console.error('Error fetching guest:', error);
+    res.status(500).json({ error: 'Failed to fetch guest' });
+  }
+});
+
 app.put('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
   const error = validateGuestProfile(req.body);
   if (error) return res.status(400).json({ error });
@@ -967,6 +979,33 @@ app.put('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), asyn
   const result = await db.collection('guests').updateOne({ id }, { $set: updates });
   if (result.matchedCount === 0) return res.status(404).json({ error: 'Guest not found.' });
   res.json({ id, ...updates });
+});
+
+// Delete guest account
+app.delete('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if guest has reservation history
+    const reservationCount = await db.collection('reservations').countDocuments({ guestId: id });
+    if (reservationCount > 0) {
+      return res.status(409).json({ error: 'Guests with reservation history cannot be deleted.' });
+    }
+
+    const result = await db.collection('guests').deleteOne({ id });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'Guest not found.' });
+    }
+
+    // Also delete the associated account if it exists
+    await db.collection('accounts').deleteOne({ guestId: id });
+
+    res.json({ message: 'Guest deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting guest:', error);
+    res.status(500).json({ error: 'Failed to delete guest' });
+  }
 });
 
 function validateGuestProfile(guest) {

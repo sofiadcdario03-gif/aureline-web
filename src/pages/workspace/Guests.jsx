@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MoreHorizontal } from 'lucide-react';
+import { MoreHorizontal, Plus } from 'lucide-react';
 import { fullName, initials } from '../../utils/formatters.js';
 import Empty from '../../components/ui/Empty.jsx';
 import PageHeading from '../../components/ui/PageHeading.jsx';
@@ -16,7 +16,12 @@ export default function Guests(c) {
         eyebrow="PEOPLE, NOT JUST RESERVATIONS"
         title="Our guests"
         description="Remember the names. Take care of the details."
-      />
+      >
+        <button className="button primary" onClick={() => c.setModal({ type: 'guestForm' })}>
+          <Plus size={17} />
+          Add guest
+        </button>
+      </PageHeading>
       <section className="panel">
         <div className="filter-bar">
           <SearchBox

@@ -56,7 +56,10 @@ export default function ModalContent({ modal, onClose, ...hotel }) {
         email={modal.email}
         purpose={modal.purpose}
         onVerified={modal.onVerified}
-        onClose={onClose}
+        onClose={() => {
+          if (modal.onClose) modal.onClose();
+          onClose();
+        }}
       />
     );
   const Component = modalComponents[modal.type];

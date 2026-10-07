@@ -17,6 +17,9 @@ export default function Profile(c) {
   const [phone, setPhone] = useState(staffAccount?.phone || '');
   const [phoneError, setPhoneError] = useState('');
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(c.session?.twoFactorEnabled || false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [passwordError2FA, setPasswordError2FA] = useState('');
+  const [show2FAPassword, setShow2FAPassword] = useState(false);
 
   const startEditingPhone = () => {
     setEditingPhone(true);
@@ -76,11 +79,13 @@ export default function Profile(c) {
             c.navigate('/login');
           }, 1500);
         },
+        onClose: () => {
+          setBusy(false);
+        },
       });
     } catch (error) {
       console.error('Error changing password:', error);
       setPasswordError('Current password is incorrect.');
-    } finally {
       setBusy(false);
     }
   }
@@ -108,6 +113,48 @@ export default function Profile(c) {
     } catch (error) {
       console.error('Error updating phone:', error);
       c.notify('Failed to update phone number.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleTwoFactor() {
+    setPasswordError2FA('');
+    if (!currentPassword) {
+      setShow2FAPassword(true);
+      return setPasswordError2FA('Please enter your current password to continue.');
+    }
+    setBusy(true);
+    try {
+      await api.post('/auth/verify-password', { currentPassword });
+      const newTwoFactorState = !twoFactorEnabled;
+      c.setModal({
+        type: 'otp',
+        email: email.toLowerCase(),
+        purpose: newTwoFactorState ? 'Enable 2FA' : 'Disable 2FA',
+        onVerified: async () => {
+          await api.patch('/profile', { twoFactorEnabled: newTwoFactorState });
+          setTwoFactorEnabled(newTwoFactorState);
+          c.setSession({ ...c.session, twoFactorEnabled: newTwoFactorState });
+          if (!c.isGuest) await c.reloadStaff();
+          setCurrentPassword('');
+          setShow2FAPassword(false);
+          setPasswordError2FA('');
+          c.notify(
+            newTwoFactorState
+              ? 'Two-factor authentication enabled'
+              : 'Two-factor authentication disabled',
+          );
+        },
+        onClose: () => {
+          setCurrentPassword('');
+          setShow2FAPassword(false);
+          setPasswordError2FA('');
+        },
+      });
+    } catch (error) {
+      console.error('Error verifying password:', error);
+      setPasswordError2FA('Current password is incorrect.');
     } finally {
       setBusy(false);
     }
@@ -204,44 +251,100 @@ export default function Profile(c) {
               marginTop: '20px',
               paddingTop: '20px',
               borderTop: '1px solid #eee',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
             }}
           >
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={twoFactorEnabled}
-                onChange={async (e) => {
-                  try {
-                    await api.patch('/profile', { twoFactorEnabled: e.target.checked });
-                    setTwoFactorEnabled(e.target.checked);
-                    c.setSession({ ...c.session, twoFactorEnabled: e.target.checked });
-                    if (!c.isGuest) await c.reloadStaff();
-                    c.notify(
-                      e.target.checked
-                        ? 'Two-factor authentication enabled'
-                        : 'Two-factor authentication disabled',
-                    );
-                  } catch (error) {
-                    c.notify(
-                      error.response?.data?.error || 'Profile settings could not be updated.',
-                    );
-                  }
-                }}
-                style={{ width: '18px', height: '18px' }}
-              />
-              <span>Enable two-factor authentication</span>
-            </label>
-            {g && (
-              <button
-                className="button primary"
-                onClick={() => c.setModal({ type: 'guestForm', item: g })}
-              >
-                <Pencil size={16} />
-                Edit profile
-              </button>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '15px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                  <div
+                    style={{
+                      position: 'relative',
+                      width: '44px',
+                      height: '24px',
+                      backgroundColor: twoFactorEnabled ? '#244a3d' : '#dfe4dc',
+                      borderRadius: '12px',
+                      transition: 'background-color 0.18s',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      setShow2FAPassword(true);
+                      setPasswordError2FA('');
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '2px',
+                        left: twoFactorEnabled ? '22px' : '2px',
+                        width: '20px',
+                        height: '20px',
+                        backgroundColor: 'white',
+                        borderRadius: '50%',
+                        transition: 'left 0.18s',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                      }}
+                    />
+                  </div>
+                  <span>Enable two-factor authentication</span>
+                </label>
+              </div>
+              {g && (
+                <button
+                  className="button primary"
+                  onClick={() => c.setModal({ type: 'guestForm', item: g })}
+                >
+                  <Pencil size={16} />
+                  Edit profile
+                </button>
+              )}
+            </div>
+            {show2FAPassword && (
+              <>
+                {passwordError2FA && (
+                  <p className="form-error" role="alert" style={{ marginBottom: '10px' }}>
+                    {passwordError2FA}
+                  </p>
+                )}
+                <PasswordField
+                  label="Current password (required to change 2FA)"
+                  autoComplete="current-password"
+                  showStrength={false}
+                  maxLength={64}
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  style={{ marginBottom: '10px' }}
+                />
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {currentPassword && (
+                    <button
+                      className="button primary"
+                      onClick={toggleTwoFactor}
+                      disabled={busy}
+                      style={{ padding: '4px 12px', fontSize: '14px' }}
+                    >
+                      {busy ? 'Verifying...' : 'Confirm'}
+                    </button>
+                  )}
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      setCurrentPassword('');
+                      setShow2FAPassword(false);
+                      setPasswordError2FA('');
+                    }}
+                    style={{ padding: '4px 12px', fontSize: '14px' }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
             )}
           </div>
           <p className="info-note">
