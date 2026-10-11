@@ -30,7 +30,7 @@ export default function ModalContent({ modal, onClose, ...hotel }) {
       <Modal title={modal.title} subtitle={modal.message} onClose={onClose}>
         <div className="modal-actions">
           <button className="button secondary" onClick={onClose}>
-            Keep record
+            {modal.cancelLabel || 'Keep record'}
           </button>
           <button
             className="button danger"
@@ -45,7 +45,7 @@ export default function ModalContent({ modal, onClose, ...hotel }) {
               }
             }}
           >
-            Delete record
+            {modal.confirmLabel || 'Delete record'}
           </button>
         </div>
       </Modal>

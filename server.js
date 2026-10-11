@@ -645,6 +645,21 @@ app.patch('/api/rooms/:id/status', authenticate, allowRoles('Admin'), async (req
   res.json(safeRoom(updated));
 });
 
+app.delete('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) => {
+  const room = await db.collection('rooms').findOne({ id: req.params.id });
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  const reservationCount = await db.collection('reservations').countDocuments({
+    roomId: room.id,
+  });
+  if (reservationCount > 0) {
+    return res.status(409).json({
+      error: 'Rooms with reservation history cannot be deleted. Set the room to Inactive instead.',
+    });
+  }
+  await db.collection('rooms').deleteOne({ id: room.id });
+  res.json({ message: 'Room deleted successfully.' });
+});
+
 app.get('/api/reservations', authenticate, async (req, res) => {
   const filter = req.auth.guestId ? { guestId: req.auth.guestId } : {};
   const reservations = await db
@@ -676,13 +691,15 @@ app.get('/api/payments', authenticate, async (req, res) => {
 app.post('/api/payments', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
   const bookingId = req.body.bookingId;
   const amount = Number(req.body.amount);
-  const method = req.body.method;
+  const method = typeof req.body.method === 'string' ? req.body.method.trim() : '';
   if (
     typeof bookingId !== 'string' ||
     !Number.isFinite(amount) ||
     amount <= 0 ||
     Math.round(amount * 100) !== amount * 100 ||
-    !['Cash', 'Card', 'Other'].includes(method)
+    !method ||
+    method.length > 50 ||
+    method === 'Other'
   ) {
     return res
       .status(400)
@@ -947,7 +964,9 @@ app.get('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (r
 // Get single guest by ID
 app.get('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
   try {
-    const guest = await db.collection('guests').findOne({ id: req.params.id }, { projection: { _id: 0 } });
+    const guest = await db
+      .collection('guests')
+      .findOne({ id: req.params.id }, { projection: { _id: 0 } });
     if (!guest) return res.status(404).json({ error: 'Guest not found.' });
     res.json(guest);
   } catch (error) {

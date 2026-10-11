@@ -1,6 +1,7 @@
 import React from 'react';
 import { ArrowRight, Check, Trash2, Pencil } from 'lucide-react';
 import { money } from '../../data.js';
+import { roomInclusions } from '../../data/roomInclusions.js';
 import Badge from '../ui/Badge.jsx';
 import Modal from '../ui/Modal.jsx';
 import api from '../../services/api.js';
@@ -20,22 +21,12 @@ export default function RoomDetailsModal({ item, onClose, ...c }) {
       </div>
       <p className="description-text">{item.description}</p>
       <div className="amenities">
-        <span>
-          <Check size={15} />
-          Complimentary Wi-Fi
-        </span>
-        <span>
-          <Check size={15} />
-          Air conditioning
-        </span>
-        <span>
-          <Check size={15} />
-          Premium linens
-        </span>
-        <span>
-          <Check size={15} />
-          Daily housekeeping
-        </span>
+        {roomInclusions[item.type].map((inclusion) => (
+          <span key={inclusion}>
+            <Check size={15} />
+            {inclusion}
+          </span>
+        ))}
       </div>
       <div className="modal-actions">
         {c.role === 'Admin' && (
@@ -45,23 +36,20 @@ export default function RoomDetailsModal({ item, onClose, ...c }) {
               onClick={() => {
                 c.setModal({
                   type: 'confirmDelete',
-                  title: 'Archive this room?',
-                  message: `Room ${item.number} will no longer appear in room search. Its reservation history will be retained.`,
+                  title: 'Delete this room permanently?',
+                  message: `Room ${item.number} will be permanently deleted. Rooms with reservation history cannot be deleted; edit the room and set it to Inactive to keep its history.`,
+                  confirmLabel: 'Delete room',
+                  cancelLabel: 'Keep room',
                   action: async () => {
-                    try {
-                      await api.patch(`/rooms/${item.id}/status`, { status: 'Inactive' });
-                      c.setRooms((rooms) => rooms.filter((room) => room.id !== item.id));
-                      c.notify('Room archived.');
-                    } catch (error) {
-                      c.notify(error.response?.data?.error || 'Room could not be archived.');
-                      throw error;
-                    }
+                    await api.delete(`/rooms/${item.id}`);
+                    c.setRooms((rooms) => rooms.filter((room) => room.id !== item.id));
+                    c.notify('Room permanently deleted.');
                   },
                 });
               }}
             >
               <Trash2 size={16} />
-              Archive room
+              Delete room
             </button>
             <button
               className="button secondary"

@@ -1710,6 +1710,13 @@ tbody tr:hover {
   color: #859676;
   font-size: 11px;
 }
+.room-inclusions {
+  margin-top: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcf9;
+}
 .guest-detail-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

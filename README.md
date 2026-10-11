@@ -86,7 +86,7 @@ Search dates, guest count, and room type are kept in the URL, including the retu
 
 The Express API uses MongoDB Atlas for rooms, guests, staff, credentials, reservations, and payment records. Passwords are PBKDF2-hashed on the server. Signed access tokens are required for protected APIs; Admin manages rooms and staff, Admin/Front Desk manage workspace records and reservations, and Guests may only view or cancel their own reservations. Room search is public.
 
-Room status values are `Available`, `Maintenance`, and `Inactive`. Occupancy and availability are derived from active reservation records; overlapping stays are rejected using check-in/check-out dates, with checkout/check-in on the same date allowed. Reservation creation and edits use MongoDB transactions to serialize claims per room. Historical reservations remain stored when a room is archived.
+Room status values are `Available`, `Maintenance`, and `Inactive`. Occupancy and availability are derived from active reservation records; overlapping stays are rejected using check-in/check-out dates, with checkout/check-in on the same date allowed. Reservation creation and edits use MongoDB transactions to serialize claims per room. Rooms with reservation history cannot be permanently deleted; set their status to `Inactive` to remove them from room search while retaining their history.
 
 API endpoints include `/api/auth/login`, `/api/auth/register`, `/api/rooms`, and `/api/reservations`, plus protected guest/staff/profile endpoints and the existing OTP/password-reset routes. The frontend talks only to Express; MongoDB credentials remain server-side.
 

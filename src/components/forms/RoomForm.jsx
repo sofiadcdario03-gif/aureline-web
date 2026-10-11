@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Check } from 'lucide-react';
 import { photos } from '../../data.js';
+import { roomInclusions } from '../../data/roomInclusions.js';
 import { isActiveReservation as active } from '../../reservationRules.js';
 import api from '../../services/api.js';
 import Field from '../ui/Field.jsx';
@@ -30,11 +31,11 @@ export default function RoomForm({ item, onClose, ...c }) {
           if (c.rooms.some((r) => r.id !== item?.id && r.number === data.number))
             return c.notify('This room number already exists.');
           if (
-            data.status === 'Maintenance' &&
+            ['Maintenance', 'Inactive'].includes(data.status) &&
             c.bookings.some((b) => b.roomId === item?.id && active(b))
           )
             return c.notify(
-              'Reassign or cancel active reservations before scheduling maintenance.',
+              'Reassign or cancel active reservations before setting this room to maintenance or inactive.',
             );
           if (
             c.bookings.some(
@@ -110,6 +111,7 @@ export default function RoomForm({ item, onClose, ...c }) {
             >
               <option>Available</option>
               <option>Maintenance</option>
+              {item && <option>Inactive</option>}
             </select>
           </Field>
           <Field
@@ -120,6 +122,16 @@ export default function RoomForm({ item, onClose, ...c }) {
             onChange={(e) => setData({ ...data, image: e.target.value })}
           />
         </div>
+        <Field label="Included with this room">
+          <div className="amenities room-inclusions" aria-live="polite">
+            {roomInclusions[data.type].map((inclusion) => (
+              <span key={inclusion}>
+                <Check size={15} />
+                {inclusion}
+              </span>
+            ))}
+          </div>
+        </Field>
         <Field label="Description">
           <textarea
             required

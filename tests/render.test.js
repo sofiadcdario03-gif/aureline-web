@@ -184,5 +184,24 @@ test('separated detail dialogs and CRUD forms render with their dependencies', (
       ),
     );
     assert.ok(html.includes('role="dialog"'), `Dialog failed: ${type}`);
+    if (type === 'room') {
+      assert.ok(html.includes('Delete room'));
+      assert.ok(!html.includes('Archive room'));
+      assert.ok(html.includes('Fresh linens'));
+    }
   }
+  const suiteForm = renderToString(
+    React.createElement(
+      MemoryRouter,
+      null,
+      React.createElement(ModalContent, {
+        ...hotel,
+        onClose: () => {},
+        modal: { type: 'roomForm', item: { ...room, type: 'Suite' } },
+      }),
+    ),
+  );
+  assert.ok(suiteForm.includes('Separate living area'));
+  assert.ok(suiteForm.includes('Welcome refreshments'));
+  assert.ok(!suiteForm.includes('Dedicated workspace'));
 });
