@@ -15,6 +15,8 @@
     "create-admin": "node createAdmin.js"
   },
   "dependencies": {
+    "@vercel/express": "^18.0.1",
+    "@vercel/node": "^23.0.1",
     "@vitejs/plugin-react": "latest",
     "axios": "latest",
     "bootstrap": "^5.3.3",
