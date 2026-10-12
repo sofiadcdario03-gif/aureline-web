@@ -78,6 +78,15 @@ async function connectToDatabase() {
       db.collection('staff').createIndex({ id: 1 }, { unique: true }),
       db.collection('staff').createIndex({ email: 1 }, { unique: true }),
       db.collection('accounts').createIndex({ guestId: 1 }, { unique: true }),
+      // Serverless-specific collections
+      db.collection('otps').createIndex({ email: 1 }, { unique: true }),
+      db.collection('otps').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+      db.collection('loginChallenges').createIndex({ email: 1 }, { unique: true }),
+      db.collection('loginChallenges').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+      db.collection('registrationTickets').createIndex({ token: 1 }, { unique: true }),
+      db.collection('registrationTickets').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+      db.collection('resetTokens').createIndex({ token: 1 }, { unique: true }),
+      db.collection('resetTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     ]);
     console.log('Connected to MongoDB Atlas');
   }
@@ -368,7 +377,7 @@ app.post('/api/auth/login', async (req, res) => {
     ...(guest ? { guestId: guest.id } : { staffId: staff.id }),
   };
   if (user.twoFactorEnabled) {
-    loginChallenges.set(email, { identity, user, expiresAt: Date.now() + 5 * 60 * 1000 });
+    await storeLoginChallenge(database, email, identity, user);
     return res.json({ requiresOtp: true, user });
   }
   res.json({
@@ -398,28 +407,101 @@ app.get('/api/profile', authenticate, async (req, res) => {
   res.json(profile);
 });
 
-// OTP storage (in-memory, expires after 5 minutes)
-const otpStore = new Map();
-const loginChallenges = new Map();
-const verifiedRegistrationTickets = new Map();
+// OTP storage (MongoDB-based for serverless persistence)
+async function storeOTP(db, email, otp, purpose) {
+  const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute (60 seconds)
+  await db.collection('otps').updateOne(
+    { email: email.toLowerCase() },
+    { $set: { otp, purpose, expiresAt } },
+    { upsert: true }
+  );
+}
+
+async function verifyOTP(db, email, otp) {
+  const stored = await db.collection('otps').findOne({ email: email.toLowerCase() });
+  if (!stored) return false;
+  if (Date.now() > stored.expiresAt) {
+    await db.collection('otps').deleteOne({ email: email.toLowerCase() });
+    return false;
+  }
+  if (stored.otp === otp) {
+    await db.collection('otps').deleteOne({ email: email.toLowerCase() });
+    return { otp: stored.otp, purpose: stored.purpose };
+  }
+  return false;
+}
+
+async function storeLoginChallenge(db, email, identity, user) {
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+  await db.collection('loginChallenges').updateOne(
+    { email: email.toLowerCase() },
+    { $set: { identity, user, expiresAt } },
+    { upsert: true }
+  );
+}
+
+async function getLoginChallenge(db, email) {
+  const challenge = await db.collection('loginChallenges').findOne({ email: email.toLowerCase() });
+  if (!challenge) return null;
+  if (Date.now() > challenge.expiresAt) {
+    await db.collection('loginChallenges').deleteOne({ email: email.toLowerCase() });
+    return null;
+  }
+  return challenge;
+}
+
+async function deleteLoginChallenge(db, email) {
+  await db.collection('loginChallenges').deleteOne({ email: email.toLowerCase() });
+}
+
+async function storeRegistrationTicket(db, email, registrationToken) {
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+  await db.collection('registrationTickets').updateOne(
+    { token: registrationToken },
+    { $set: { email: email.toLowerCase(), expiresAt } },
+    { upsert: true }
+  );
+}
+
+async function verifyRegistrationTicket(db, token) {
+  const ticket = await db.collection('registrationTickets').findOne({ token });
+  if (!ticket) return null;
+  if (Date.now() > ticket.expiresAt) {
+    await db.collection('registrationTickets').deleteOne({ token });
+    return null;
+  }
+  return ticket;
+}
+
+async function deleteRegistrationTicket(db, token) {
+  await db.collection('registrationTickets').deleteOne({ token });
+}
+
+async function storeResetToken(db, email, token) {
+  const expiresAt = Date.now() + 30 * 60 * 1000; // 30 minutes
+  await db.collection('resetTokens').updateOne(
+    { token },
+    { $set: { email: email.toLowerCase(), expiresAt } },
+    { upsert: true }
+  );
+}
+
+async function verifyResetToken(db, token) {
+  const stored = await db.collection('resetTokens').findOne({ token });
+  if (!stored) return null;
+  if (Date.now() > stored.expiresAt) {
+    await db.collection('resetTokens').deleteOne({ token });
+    return null;
+  }
+  return stored.email;
+}
+
+async function deleteResetToken(db, token) {
+  await db.collection('resetTokens').deleteOne({ token });
+}
 
 function generateOTP() {
   return crypto.randomInt(100000, 1000000).toString();
-}
-
-function storeOTP(email, otp, purpose) {
-  const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute (60 seconds)
-  otpStore.set(email.toLowerCase(), { otp, purpose, expiresAt });
-}
-
-function verifyOTP(email, otp) {
-  const stored = otpStore.get(email.toLowerCase());
-  if (!stored) return false;
-  if (Date.now() > stored.expiresAt) {
-    otpStore.delete(email.toLowerCase());
-    return false;
-  }
-  return stored.otp === otp ? stored : false;
 }
 
 async function sendOTPEmail(email, otp, purpose) {
@@ -454,6 +536,7 @@ async function sendOTPEmail(email, otp, purpose) {
 // OTP endpoints
 app.post('/api/otp/send', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { email, purpose } = req.body;
 
     if (!email) {
@@ -461,18 +544,19 @@ app.post('/api/otp/send', async (req, res) => {
     }
     const normalizedEmail = email.toLowerCase();
     if (
-      purpose === 'Login Verification' &&
-      (!loginChallenges.has(normalizedEmail) ||
-        loginChallenges.get(normalizedEmail).expiresAt <= Date.now())
+      purpose === 'Login Verification'
     ) {
-      loginChallenges.delete(normalizedEmail);
-      return res
-        .status(400)
-        .json({ error: 'Sign in again before requesting a verification code.' });
+      const challenge = await getLoginChallenge(database, normalizedEmail);
+      if (!challenge || challenge.expiresAt <= Date.now()) {
+        await deleteLoginChallenge(database, normalizedEmail);
+        return res
+          .status(400)
+          .json({ error: 'Sign in again before requesting a verification code.' });
+      }
     }
 
     const otp = generateOTP();
-    storeOTP(normalizedEmail, otp, purpose);
+    await storeOTP(database, normalizedEmail, otp, purpose);
 
     const emailSent = await sendOTPEmail(email, otp, purpose);
 
@@ -489,19 +573,19 @@ app.post('/api/otp/send', async (req, res) => {
 
 app.post('/api/otp/verify', async (req, res) => {
   try {
+    const database = await connectToDatabase();
     const { email, otp } = req.body;
 
     if (!email || !otp) {
       return res.status(400).json({ error: 'Email and OTP are required' });
     }
 
-    const verified = verifyOTP(email, otp);
+    const verified = await verifyOTP(database, email, otp);
 
     if (verified) {
-      otpStore.delete(email.toLowerCase());
       if (verified.purpose === 'Login Verification') {
-        const challenge = loginChallenges.get(email.toLowerCase());
-        loginChallenges.delete(email.toLowerCase());
+        const challenge = await getLoginChallenge(database, email.toLowerCase());
+        await deleteLoginChallenge(database, email.toLowerCase());
         if (!challenge || challenge.expiresAt <= Date.now()) {
           return res.status(400).json({ error: 'Sign in again to verify your account.' });
         }
@@ -513,10 +597,7 @@ app.post('/api/otp/verify', async (req, res) => {
       }
       if (verified.purpose === 'Account Creation') {
         const registrationToken = crypto.randomBytes(32).toString('base64url');
-        verifiedRegistrationTickets.set(registrationToken, {
-          email: email.toLowerCase(),
-          expiresAt: Date.now() + 5 * 60 * 1000,
-        });
+        await storeRegistrationTicket(database, email.toLowerCase(), registrationToken);
         return res.json({
           message: 'OTP verified successfully',
           registrationToken,
@@ -533,25 +614,8 @@ app.post('/api/otp/verify', async (req, res) => {
 });
 
 // Password reset
-const resetTokenStore = new Map();
-
 function generateResetToken() {
   return crypto.randomBytes(32).toString('base64url');
-}
-
-function storeResetToken(email, token) {
-  const expiresAt = Date.now() + 30 * 60 * 1000; // 30 minutes
-  resetTokenStore.set(token, { email, expiresAt });
-}
-
-function verifyResetToken(token) {
-  const stored = resetTokenStore.get(token);
-  if (!stored) return null;
-  if (Date.now() > stored.expiresAt) {
-    resetTokenStore.delete(token);
-    return null;
-  }
-  return stored.email;
 }
 
 async function sendResetEmail(email, token) {
@@ -607,7 +671,7 @@ app.post('/api/forgot-password', async (req, res) => {
     }
 
     const token = generateResetToken();
-    storeResetToken(normalizedEmail, token);
+    await storeResetToken(database, normalizedEmail, token);
 
     const emailSent = await sendResetEmail(normalizedEmail, token);
 
@@ -635,7 +699,7 @@ app.post('/api/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
-    const email = verifyResetToken(token);
+    const email = await verifyResetToken(database, token);
     if (!email) {
       return res.status(400).json({ error: 'Invalid or expired reset token' });
     }
@@ -653,7 +717,7 @@ app.post('/api/reset-password', async (req, res) => {
       await database.collection('staff').updateOne({ email }, { $set: { salt, digest } });
     }
 
-    resetTokenStore.delete(token);
+    await deleteResetToken(database, token);
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
