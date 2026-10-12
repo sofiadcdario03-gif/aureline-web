@@ -15,4 +15,8 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Warm up the serverless function on app load to reduce cold start delays.
+// The request is fire-and-forget; errors are silently ignored.
+api.get('/health').catch(() => {});
+
 export default api;
