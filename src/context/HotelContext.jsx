@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { day, nights } from '../data';
@@ -35,9 +35,10 @@ export function HotelProvider({ children }) {
   useEffect(() => {
     api
       .get('/rooms')
-      .then(({ data }) => setRooms(data))
+      .then(({ data }) => setRooms(Array.isArray(data) ? data : []))
       .catch((error) => {
         console.error('Error loading rooms from database:', error);
+        setRooms([]);
         notify(error.response?.data?.error || 'Rooms could not be loaded from the server.');
       });
   }, []);
@@ -92,31 +93,44 @@ export function HotelProvider({ children }) {
     };
   }, [session?.token, session?.role]);
 
-  const reloadStaff = async () => {
+  const reloadStaff = useCallback(async () => {
     try {
       const { data } = await api.get('/staff');
-      setStaff(data);
+      setStaff(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error reloading staff from database:', error);
+      setStaff([]);
       throw error;
     }
-  };
+  }, []);
 
-  const reloadRooms = async () => {
+  const reloadRooms = useCallback(async () => {
     const { data } = await api.get('/rooms');
-    setRooms(data);
+    setRooms(Array.isArray(data) ? data : []);
     return data;
-  };
-  const reloadBookings = async () => {
-    const { data } = await api.get('/reservations');
-    setBookings(data);
-    return data;
-  };
-  const reloadPayments = async () => {
-    const { data } = await api.get('/payments');
-    setPayments(data);
-    return data;
-  };
+  }, []);
+
+  const reloadBookings = useCallback(async () => {
+    try {
+      const { data } = await api.get('/reservations');
+      setBookings(Array.isArray(data) ? data : []);
+      return data;
+    } catch (error) {
+      setBookings([]);
+      throw error;
+    }
+  }, []);
+
+  const reloadPayments = useCallback(async () => {
+    try {
+      const { data } = await api.get('/payments');
+      setPayments(Array.isArray(data) ? data : []);
+      return data;
+    } catch (error) {
+      setPayments([]);
+      throw error;
+    }
+  }, []);
   const guest = (id) =>
       guests.find((g) => g.id === id) ||
       (session?.guestId === id && session.profile ? { id, ...session.profile } : undefined),
@@ -162,7 +176,7 @@ export function HotelProvider({ children }) {
           error.response?.data?.error || 'Reservation and payment records could not be loaded.',
         );
     });
-  }, [session?.token]);
+  }, [session?.token, reloadBookings, reloadPayments]);
   const ctx = {
     rooms,
     setRooms,

@@ -12,7 +12,8 @@
     "format:check": "prettier --check src tests README.md",
     "server": "node server.js",
     "seed:rooms": "node scripts/seedRooms.js",
-    "create-admin": "node createAdmin.js"
+    "create-admin": "node createAdmin.js",
+    "delete-db": "node deleteDatabase.js"
   },
   "dependencies": {
     "@vercel/express": "^18.0.1",

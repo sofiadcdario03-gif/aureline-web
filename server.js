@@ -304,11 +304,22 @@ app.post('/api/auth/login', async (req, res) => {
     db.collection('staff').findOne({ email }),
   ]);
   const person = guest || staff;
+
+  // Debug logging
+  console.log('Login attempt for email:', email);
+  console.log('Found person:', person ? 'Yes' : 'No');
+  if (staff) {
+    console.log('Staff status:', staff.status);
+    console.log('Staff role:', staff.role);
+    console.log('Has salt/digest:', !!(staff.salt && staff.digest));
+  }
+
   if (
     !person ||
     typeof person.id !== 'string' ||
     (staff && (staff.status !== 'Active' || !['Admin', 'Front Desk'].includes(staff.role)))
   ) {
+    console.log('Login failed: Invalid person or status');
     return res.status(401).json({ error: 'The email or password is incorrect.' });
   }
 
@@ -316,14 +327,17 @@ app.post('/api/auth/login', async (req, res) => {
   if (guest) {
     const credential = await db.collection('accounts').findOne({ guestId: guest.id });
     passwordValid = verifyPassword(password, credential?.salt, credential?.digest);
+    console.log('Guest password valid:', passwordValid);
   } else if (staff.salt && staff.digest) {
     passwordValid = verifyPassword(password, staff.salt, staff.digest);
+    console.log('Staff password valid:', passwordValid);
   } else if (typeof staff.password === 'string') {
     const storedPassword = Buffer.from(staff.password);
     const suppliedPassword = Buffer.from(password);
     passwordValid =
       storedPassword.length === suppliedPassword.length &&
       crypto.timingSafeEqual(storedPassword, suppliedPassword);
+    console.log('Legacy password valid:', passwordValid);
     if (passwordValid) {
       const salt = generateSalt();
       const digest = await hashPassword(password, salt);
@@ -332,7 +346,10 @@ app.post('/api/auth/login', async (req, res) => {
         .updateOne({ _id: staff._id }, { $set: { salt, digest }, $unset: { password: '' } });
     }
   }
-  if (!passwordValid) return res.status(401).json({ error: 'The email or password is incorrect.' });
+  if (!passwordValid) {
+    console.log('Login failed: Invalid password');
+    return res.status(401).json({ error: 'The email or password is incorrect.' });
+  }
 
   const user = cleanPerson({ ...person, role: guest ? 'Guest' : staff.role });
   const identity = {
