@@ -43,10 +43,11 @@ if (!process.env.MONGO_URI) {
 const uri = process.env.MONGO_URI;
 const options = {
   maxPoolSize: 10,
-  minPoolSize: 2,
-  maxIdleTimeMS: 30000,
-  serverSelectionTimeoutMS: 5000,
+  minPoolSize: 0,
+  maxIdleTimeMS: 10000,
+  serverSelectionTimeoutMS: 10000,
   socketTimeoutMS: 45000,
+  connectTimeoutMS: 10000,
 };
 
 if (process.env.NODE_ENV === 'development') {
@@ -64,7 +65,9 @@ async function connectToDatabase() {
   const client = await clientPromise;
   if (!db) {
     db = client.db(process.env.MONGODB_DB_NAME || 'hotel-management');
-    await Promise.all([
+    console.log('Connected to MongoDB Atlas');
+    // Create indexes in the background — don't block requests waiting for them
+    Promise.all([
       db.collection('rooms').createIndex({ id: 1 }, { unique: true }),
       db.collection('rooms').createIndex({ number: 1 }, { unique: true }),
       db.collection('rooms').createIndex({ status: 1, type: 1, capacity: 1 }),
@@ -78,7 +81,6 @@ async function connectToDatabase() {
       db.collection('staff').createIndex({ id: 1 }, { unique: true }),
       db.collection('staff').createIndex({ email: 1 }, { unique: true }),
       db.collection('accounts').createIndex({ guestId: 1 }, { unique: true }),
-      // Serverless-specific collections
       db.collection('otps').createIndex({ email: 1 }, { unique: true }),
       db.collection('otps').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       db.collection('loginChallenges').createIndex({ email: 1 }, { unique: true }),
@@ -87,8 +89,7 @@ async function connectToDatabase() {
       db.collection('registrationTickets').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
       db.collection('resetTokens').createIndex({ token: 1 }, { unique: true }),
       db.collection('resetTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
-    ]);
-    console.log('Connected to MongoDB Atlas');
+    ]).catch((err) => console.error('Index creation error (non-fatal):', err.message));
   }
   return db;
 }
@@ -257,13 +258,10 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Verify email configuration on startup
-transporter.verify((error, success) => {
+// Verify email configuration on startup (non-blocking, never throws)
+transporter.verify((error) => {
   if (error) {
-    console.error('Email configuration error:', error);
-    console.log(
-      'Email sending will be disabled. Check your EMAIL_USER and EMAIL_PASS in .env file.',
-    );
+    console.error('Email configuration error:', error.message);
   } else {
     console.log('Email server is ready to send messages');
   }

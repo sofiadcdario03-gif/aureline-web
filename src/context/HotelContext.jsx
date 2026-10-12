@@ -23,7 +23,11 @@ export function HotelProvider({ children }) {
   const role = session?.role || 'Visitor',
     isGuest = role === 'Guest';
   const notify = (message) => {
-    setToast(message);
+    if (message && typeof message === 'object') {
+      setToast(message.message || message.error || JSON.stringify(message));
+    } else {
+      setToast(String(message ?? 'An unexpected error occurred.'));
+    }
   };
   useEffect(() => {
     if (toast) {
