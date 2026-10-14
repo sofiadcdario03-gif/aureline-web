@@ -988,6 +988,27 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Server is running' });
 });
 
+app.get('/api/auth/me', authenticate, (req, res) => {
+  res.json({
+    user: {
+      name: req.auth.name,
+      role: req.auth.role,
+      ...(req.auth.guestId ? { guestId: req.auth.guestId } : { staffId: req.auth.staffId }),
+    },
+  });
+});
+
+app.get('/api/profile', authenticate, async (req, res) => {
+  const database = await connectToDatabase();
+  const collection = req.auth.guestId ? 'guests' : 'staff';
+  const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
+  const profile = await database
+    .collection(collection)
+    .findOne(filter, { projection: { _id: 0, salt: 0, digest: 0, password: 0 } });
+  if (!profile) return res.status(404).json({ error: 'Profile not found.' });
+  res.json(profile);
+});
+
 // Payments endpoints
 app.get('/api/payments', authenticate, async (req, res) => {
   const database = await connectToDatabase();
