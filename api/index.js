@@ -10,7 +10,7 @@ import {
   hashPassword,
   verifyAccessToken,
   verifyPassword,
-} from '../server/security.js';
+} from './security.js';
 
 dotenv.config();
 
