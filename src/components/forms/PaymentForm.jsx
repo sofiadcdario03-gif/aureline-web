@@ -11,8 +11,7 @@ export default function PaymentForm({ item, onClose, ...c }) {
   const b = c.bookings.find((b) => b.id === item.id) || item;
   const balance = Math.max(0, c.total(b) - c.paid(b));
   const [amount, setAmount] = useState(balance),
-    [method, setMethod] = useState('Cash'),
-    [otherMethod, setOtherMethod] = useState('');
+    [method, setMethod] = useState('Cash');
   const history = c.payments.filter((p) => p.bookingId === b.id);
   return (
     <Modal title="Aureline Hotel" subtitle={`Statement of account · ${b.id}`} onClose={onClose}>
@@ -62,13 +61,11 @@ export default function PaymentForm({ item, onClose, ...c }) {
             const value = Number(amount);
             if (!Number.isFinite(value) || value <= 0 || value > balance)
               return c.notify('Enter an amount within the outstanding balance.');
-            const paymentMethod = method === 'Other' ? otherMethod.trim() : method;
-            if (!paymentMethod) return c.notify('Enter the payment method.');
             try {
               const { data: payment } = await api.post('/payments', {
                 bookingId: b.id,
                 amount: value,
-                method: paymentMethod,
+                method: method,
               });
               c.setPayments([...c.payments, payment]);
               setAmount(Math.max(0, balance - value));
@@ -91,22 +88,11 @@ export default function PaymentForm({ item, onClose, ...c }) {
             />
             <Field label="Payment method">
               <select value={method} onChange={(e) => setMethod(e.target.value)}>
-                {['Cash', 'Card', 'Other'].map((m) => (
+                {['Cash', 'Card', 'E-wallet', 'Bank Transfer'].map((m) => (
                   <option key={m}>{m}</option>
                 ))}
               </select>
             </Field>
-            {method === 'Other' && (
-              <Field label="Specify payment method">
-                <input
-                  required
-                  maxLength="50"
-                  value={otherMethod}
-                  onChange={(e) => setOtherMethod(e.target.value)}
-                  placeholder="Enter payment method"
-                />
-              </Field>
-            )}
           </div>
           <p className="form-hint">Records a payment received at the hotel. No card is charged.</p>
           <div className="modal-actions">
