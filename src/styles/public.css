@@ -1057,6 +1057,26 @@
   color: #4f7140;
   border-bottom-color: #63834f;
 }
+.stay-filter-tabs button {
+  position: relative;
+}
+.filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 6px;
+  background-color: #4f7140;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 9px;
+}
+.stay-filter-tabs button.selected .filter-badge {
+  background-color: #63834f;
+}
 .guest-stay-list {
   display: grid;
   gap: 22px;

@@ -35,12 +35,12 @@ function getStrengthLabel(strength) {
   }
 }
 
-export default function PasswordField({ label = 'Password', showStrength = true, ...props }) {
+export default function PasswordField({ label = 'Password', showStrength = true, required = false, ...props }) {
   const [visible, setVisible] = useState(false);
   const strength = getPasswordStrength(props.value || '');
   const strengthColor = getStrengthColor(strength);
   const strengthLabel = getStrengthLabel(strength);
-  
+
   const handleKeyDown = (e) => {
     if (e.key === ' ') {
       e.preventDefault();
@@ -49,12 +49,14 @@ export default function PasswordField({ label = 'Password', showStrength = true,
       props.onKeyDown(e);
     }
   };
-  
+
+  const { required: _required, ...inputProps } = props;
+
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>{label}{required && <span className="required">*</span>}</span>
       <div className="password-input">
-        <input {...props} type={visible ? 'text' : 'password'} required maxLength={props.maxLength} onKeyDown={handleKeyDown} />
+        <input {...inputProps} type={visible ? 'text' : 'password'} required={required} maxLength={props.maxLength} onKeyDown={handleKeyDown} />
         <button
           type="button"
           aria-label={visible ? 'Hide password' : 'Show password'}

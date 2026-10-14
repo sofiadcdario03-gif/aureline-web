@@ -8,6 +8,26 @@ import BookingTable from '../reservations/BookingTable.jsx';
 export default function GuestDetailsModal({ item, onClose, ...c }) {
   const [filter, setFilter] = useState('All stays');
   const history = c.bookings.filter((b) => b.guestId === item.id);
+
+  const getFilterCount = (filterType) => {
+    return history.filter((booking) => {
+      switch (filterType) {
+        case 'All stays':
+          return true;
+        case 'Upcoming Stay':
+          return ['Pending', 'Confirmed'].includes(booking.status);
+        case 'Current Reservation':
+          return booking.status === 'Checked-in';
+        case 'Past Reservations':
+          return booking.status === 'Checked-out';
+        case 'Cancelled':
+          return booking.status === 'Cancelled';
+        default:
+          return false;
+      }
+    }).length;
+  };
+
   const filteredBookings = history.filter(
     (booking) =>
       filter === 'All stays' ||
@@ -46,15 +66,19 @@ export default function GuestDetailsModal({ item, onClose, ...c }) {
         Reservation history <span>({history.length})</span>
       </h3>
       <div className="stay-filter-tabs" role="group" aria-label="Filter reservations" style={{ marginBottom: '20px' }}>
-        {['All stays', 'Upcoming Stay', 'Current Reservation', 'Past Reservations', 'Cancelled'].map((tab) => (
-          <button
-            key={tab}
-            className={filter === tab ? 'selected' : ''}
-            onClick={() => setFilter(tab)}
-          >
-            {tab}
-          </button>
-        ))}
+        {['All stays', 'Upcoming Stay', 'Current Reservation', 'Past Reservations', 'Cancelled'].map((tab) => {
+          const count = getFilterCount(tab);
+          return (
+            <button
+              key={tab}
+              className={filter === tab ? 'selected' : ''}
+              onClick={() => setFilter(tab)}
+            >
+              {tab}
+              {count > 0 && <span className="filter-badge">{count}</span>}
+            </button>
+          );
+        })}
       </div>
       <BookingTable {...c} rows={filteredBookings} compact />
       <div className="modal-actions">

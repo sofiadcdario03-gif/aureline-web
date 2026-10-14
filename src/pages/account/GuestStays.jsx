@@ -10,6 +10,26 @@ export default function GuestStays() {
   const hotel = useHotel();
   const [filter, setFilter] = useState('All stays');
   const { session, visibleBookings, room, setModal, total, paymentStatus } = hotel;
+
+  const getFilterCount = (filterType) => {
+    return visibleBookings.filter((booking) => {
+      switch (filterType) {
+        case 'All stays':
+          return true;
+        case 'Upcoming':
+          return ['Pending', 'Confirmed'].includes(booking.status);
+        case 'Current stay':
+          return booking.status === 'Checked-in';
+        case 'Past stays':
+          return booking.status === 'Checked-out';
+        case 'Cancelled':
+          return booking.status === 'Cancelled';
+        default:
+          return false;
+      }
+    }).length;
+  };
+
   const rows = visibleBookings.filter(
     (booking) =>
       filter === 'All stays' ||
@@ -46,15 +66,19 @@ export default function GuestStays() {
         </Link>
       </section>
       <div className="stay-filter-tabs" role="group" aria-label="Filter your stays">
-        {['All stays', 'Upcoming', 'Current stay', 'Past stays', 'Cancelled'].map((tab) => (
-          <button
-            key={tab}
-            className={filter === tab ? 'selected' : ''}
-            onClick={() => setFilter(tab)}
-          >
-            {tab}
-          </button>
-        ))}
+        {['All stays', 'Upcoming', 'Current stay', 'Past stays', 'Cancelled'].map((tab) => {
+          const count = getFilterCount(tab);
+          return (
+            <button
+              key={tab}
+              className={filter === tab ? 'selected' : ''}
+              onClick={() => setFilter(tab)}
+            >
+              {tab}
+              {count > 0 && <span className="filter-badge">{count}</span>}
+            </button>
+          );
+        })}
       </div>
       <div className="guest-stay-list">
         {rows.map((booking) => {

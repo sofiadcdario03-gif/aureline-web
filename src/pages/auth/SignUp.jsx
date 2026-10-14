@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Loader2 } from 'lucide-react';
 import { useHotel } from '../../context/HotelContext';
 import AuthLayout from '../../layouts/AuthLayout';
 import Field from '../../components/ui/Field';
 import PasswordField from '../../components/forms/PasswordField';
 import OTPModal from '../../components/modals/OTPModal';
-import { normalizeEmail, destinationAfterLogin } from '../../services/authService';
+import { normalizeEmail, destinationAfterLogin, checkEmailAvailable, checkPhoneAvailable, checkPassportAvailable } from '../../services/authService';
 import { fullName } from '../../utils/formatters';
 import api from '../../services/api';
 
@@ -27,6 +27,20 @@ export default function SignUp() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
+
+  // Server-side validation state
+  const [emailServerError, setEmailServerError] = useState(null);
+  const [emailChecking, setEmailChecking] = useState(false);
+  const [phoneServerError, setPhoneServerError] = useState(null);
+  const [phoneChecking, setPhoneChecking] = useState(false);
+  const [passportServerError, setPassportServerError] = useState(null);
+  const [passportChecking, setPassportChecking] = useState(false);
+
+  // Debounce timers
+  const emailDebounceRef = useRef(null);
+  const phoneDebounceRef = useRef(null);
+  const passportDebounceRef = useRef(null);
+
   const redirect = params.get('redirect');
 
   const validateField = (key, value) => {
@@ -34,24 +48,43 @@ export default function SignUp() {
     switch (key) {
       case 'firstName':
       case 'lastName':
-        if (value.length > 0 && value.length < 2) {
+        if (value.length === 0) {
+          error = `${key === 'firstName' ? 'First' : 'Last'} name is required`;
+        } else if (value.length < 2) {
           error = 'Minimum 2 characters';
         }
         break;
       case 'email':
-        if (value.length > 0 && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+        if (value.length === 0) {
+          error = 'Email address is required';
+        } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
           error = 'Invalid email format';
-        } else if (value.length > 0 && value.length < 5) {
+        } else if (value.length < 5) {
           error = 'Minimum 5 characters';
         }
         break;
+      case 'phone':
+        if (value.length === 0 || value === '+63 9') {
+          error = 'Phone number is required';
+        } else {
+          const digits = value.replace(/\D/g, '');
+          const phoneDigits = digits.startsWith('639') ? digits.slice(3) : digits;
+          if (phoneDigits.length !== 9) {
+            error = 'Phone number must contain exactly 9 digits';
+          }
+        }
+        break;
       case 'address':
-        if (value.length > 0 && value.length < 10) {
+        if (value.length === 0) {
+          error = 'Address is required';
+        } else if (value.length < 10) {
           error = 'Minimum 10 characters';
         }
         break;
       case 'passport':
-        if (value.length > 0 && value.length < 5) {
+        if (value.length === 0) {
+          error = 'ID/passport number is required';
+        } else if (value.length < 5) {
           error = 'Minimum 5 characters';
         }
         break;
@@ -100,7 +133,72 @@ export default function SignUp() {
 
     setData({ ...data, [key]: value });
     validateField(key, value);
+
+    // Trigger server-side validation for email, phone, and passport
+    if (key === 'email') {
+      if (emailServerError) setEmailServerError(null);
+      emailDebounceRef.current && clearTimeout(emailDebounceRef.current);
+      if (validateField('email', value) || value.length === 0) return;
+
+      setEmailChecking(true);
+      emailDebounceRef.current = setTimeout(async () => {
+        try {
+          const available = await checkEmailAvailable(value.trim().toLowerCase());
+          setEmailServerError(available ? null : 'Email address already taken');
+        } catch (_) {
+          // Ignore errors, just stop checking
+        } finally {
+          setEmailChecking(false);
+        }
+      }, 600);
+    }
+
+    if (key === 'phone') {
+      if (phoneServerError) setPhoneServerError(null);
+      phoneDebounceRef.current && clearTimeout(phoneDebounceRef.current);
+      if (validateField('phone', value) || value === '+63 9') return;
+
+      setPhoneChecking(true);
+      phoneDebounceRef.current = setTimeout(async () => {
+        try {
+          const available = await checkPhoneAvailable(value.trim());
+          setPhoneServerError(available ? null : 'Phone number already taken');
+        } catch (_) {
+          // Ignore errors, just stop checking
+        } finally {
+          setPhoneChecking(false);
+        }
+      }, 600);
+    }
+
+    if (key === 'passport') {
+      if (passportServerError) setPassportServerError(null);
+      passportDebounceRef.current && clearTimeout(passportDebounceRef.current);
+      if (validateField('passport', value) || value.length === 0) return;
+
+      setPassportChecking(true);
+      passportDebounceRef.current = setTimeout(async () => {
+        try {
+          const available = await checkPassportAvailable(value.trim());
+          setPassportServerError(available ? null : 'ID/passport number already registered');
+        } catch (_) {
+          // Ignore errors, just stop checking
+        } finally {
+          setPassportChecking(false);
+        }
+      }, 600);
+    }
   };
+
+  // Cleanup debounce timers on unmount
+  useEffect(() => {
+    return () => {
+      if (emailDebounceRef.current) clearTimeout(emailDebounceRef.current);
+      if (phoneDebounceRef.current) clearTimeout(phoneDebounceRef.current);
+      if (passportDebounceRef.current) clearTimeout(passportDebounceRef.current);
+    };
+  }, []);
+
   if (session) return <Navigate to={destinationAfterLogin(session.role, redirect)} replace />;
 
   async function submit(event) {
@@ -122,7 +220,25 @@ export default function SignUp() {
       return setError('Please fix the validation errors before submitting.');
     }
 
+    // Check for server-side validation errors
+    if (emailServerError) {
+      return setError(emailServerError);
+    }
+    if (phoneServerError) {
+      return setError(phoneServerError);
+    }
+    if (passportServerError) {
+      return setError(passportServerError);
+    }
+
+    // Wait for any pending checks
+    if (emailChecking || phoneChecking || passportChecking) {
+      return setError('Please wait while we verify your details...');
+    }
+
+    if (data.password.length === 0) return setError('Password is required.');
     if (data.password.length < 8) return setError('Use at least 8 characters for your password.');
+    if (data.confirmPassword.length === 0) return setError('Please confirm your password.');
     if (data.password !== data.confirmPassword) return setError('Your passwords do not match.');
     const email = normalizeEmail(data.email);
 
@@ -215,10 +331,16 @@ export default function SignUp() {
                 }
               }}
             />
-            {fieldErrors.email && (
+            {(fieldErrors.email || emailServerError) && (
               <p className="form-error" style={{ fontSize: '12px' }}>
-                {fieldErrors.email}
+                {fieldErrors.email || emailServerError}
               </p>
+            )}
+            {emailChecking && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                <Loader2 size={12} className="spinner" />
+                <span style={{ fontSize: '11px', color: '#999' }}>Checking availability...</span>
+              </div>
             )}
           </div>
           <div>
@@ -230,10 +352,16 @@ export default function SignUp() {
               value={data.phone}
               onChange={update('phone')}
             />
-            {fieldErrors.phone && (
+            {(fieldErrors.phone || phoneServerError) && (
               <p className="form-error" style={{ fontSize: '12px' }}>
-                {fieldErrors.phone}
+                {fieldErrors.phone || phoneServerError}
               </p>
+            )}
+            {phoneChecking && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                <Loader2 size={12} className="spinner" />
+                <span style={{ fontSize: '11px', color: '#999' }}>Checking availability...</span>
+              </div>
             )}
           </div>
         </div>
@@ -259,15 +387,22 @@ export default function SignUp() {
             value={data.passport}
             onChange={update('passport')}
           />
-          {fieldErrors.passport && (
+          {(fieldErrors.passport || passportServerError) && (
             <p className="form-error" style={{ fontSize: '12px' }}>
-              {fieldErrors.passport}
+              {fieldErrors.passport || passportServerError}
             </p>
+          )}
+          {passportChecking && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+              <Loader2 size={12} className="spinner" />
+              <span style={{ fontSize: '11px', color: '#999' }}>Checking availability...</span>
+            </div>
           )}
         </div>
         <div className="form-grid">
           <PasswordField
             label="Password"
+            required
             minLength={8}
             autoComplete="new-password"
             placeholder="At least 8 characters"
@@ -277,6 +412,7 @@ export default function SignUp() {
           />
           <PasswordField
             label="Confirm password"
+            required
             minLength={8}
             autoComplete="new-password"
             showStrength={false}

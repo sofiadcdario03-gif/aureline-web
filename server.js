@@ -386,6 +386,39 @@ app.get('/api/profile', authenticate, async (req, res) => {
   res.json(profile);
 });
 
+app.get('/api/auth/check-email', async (req, res) => {
+  const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Provide a valid email address.' });
+  }
+  const [guest, staff] = await Promise.all([
+    db.collection('guests').findOne({ email }, { projection: { _id: 1 } }),
+    db.collection('staff').findOne({ email }, { projection: { _id: 1 } }),
+  ]);
+  res.json({ available: !guest && !staff });
+});
+
+app.get('/api/auth/check-phone', async (req, res) => {
+  const phone = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
+  if (!phone || !/^\+63\s9\d{9}$/.test(phone)) {
+    return res.status(400).json({ error: 'Provide a valid phone number.' });
+  }
+  const [guest, staff] = await Promise.all([
+    db.collection('guests').findOne({ phone }, { projection: { _id: 1 } }),
+    db.collection('staff').findOne({ phone }, { projection: { _id: 1 } }),
+  ]);
+  res.json({ available: !guest && !staff });
+});
+
+app.get('/api/auth/check-passport', async (req, res) => {
+  const passport = typeof req.query.passport === 'string' ? req.query.passport.trim() : '';
+  if (!passport || !/^[a-zA-Z0-9\-]{5,20}$/.test(passport)) {
+    return res.status(400).json({ error: 'Provide a valid ID/passport number.' });
+  }
+  const guest = await db.collection('guests').findOne({ passport }, { projection: { _id: 1 } });
+  res.json({ available: !guest });
+});
+
 app.post('/api/auth/register', async (req, res) => {
   const profile = req.body.profile;
   const password = req.body.password;
@@ -419,7 +452,7 @@ app.post('/api/auth/register', async (req, res) => {
     profile.address.length > 200 ||
     !/^[a-zA-Z0-9\s#\-']+$/.test(profile.address) ||
     typeof profile.passport !== 'string' ||
-    !/^[a-zA-Z0-9]{5,20}$/.test(profile.passport)
+    !/^[a-zA-Z0-9\-]{5,20}$/.test(profile.passport)
   ) {
     return res.status(400).json({ error: 'Please provide valid guest profile details.' });
   }
@@ -427,6 +460,15 @@ app.post('/api/auth/register', async (req, res) => {
   verifiedRegistrationTickets.delete(req.body.verificationToken);
   if (await db.collection('staff').findOne({ email })) {
     return res.status(409).json({ error: 'Email already registered.' });
+  }
+  if (await db.collection('guests').findOne({ email })) {
+    return res.status(409).json({ error: 'Email already registered.' });
+  }
+  if (await db.collection('staff').findOne({ phone: profile.phone })) {
+    return res.status(409).json({ error: 'Phone number already registered.' });
+  }
+  if (await db.collection('guests').findOne({ phone: profile.phone })) {
+    return res.status(409).json({ error: 'Phone number already registered.' });
   }
   const guestId = `G-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
   const salt = generateSalt();
@@ -518,7 +560,7 @@ app.patch('/api/profile', authenticate, async (req, res) => {
       updates.address = address;
     }
     if (passport !== undefined) {
-      if (typeof passport !== 'string' || !/^[a-zA-Z0-9]{5,20}$/.test(passport)) {
+      if (typeof passport !== 'string' || !/^[a-zA-Z0-9\-]{5,20}$/.test(passport)) {
         return res.status(400).json({ error: 'Enter a valid ID or passport number.' });
       }
       updates.passport = passport;
@@ -1061,7 +1103,7 @@ function validateGuestProfile(guest) {
     guest.address.length > 200 ||
     !/^[a-zA-Z0-9\s#\-']+$/.test(guest.address) ||
     typeof guest.passport !== 'string' ||
-    !/^[a-zA-Z0-9]{5,20}$/.test(guest.passport)
+    !/^[a-zA-Z0-9\-]{5,20}$/.test(guest.passport)
   ) {
     return 'Please provide valid guest details.';
   }

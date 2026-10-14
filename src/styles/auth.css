@@ -57,6 +57,21 @@
 .auth-form .field > span {
   font-size: 11px;
 }
+.auth-form .field > span .required {
+  color: #ff4d4f;
+  margin-left: 2px;
+}
+.spinner {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
 .auth-form .field input {
   padding: 13px 14px;
   font-size: 12px;
