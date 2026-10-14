@@ -746,6 +746,114 @@ app.get('/api/rooms/:id', async (req, res) => {
   res.json(safeRoom(room));
 });
 
+app.post('/api/rooms', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const invalid = validateRoom(req.body);
+  if (invalid) return res.status(400).json({ error: invalid });
+  const room = {
+    ...req.body,
+    id: `R-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
+    number: req.body.number.trim(),
+    price: Number(req.body.price),
+    capacity: Number(req.body.capacity),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    await database.collection('rooms').insertOne(room);
+  } catch (error) {
+    if (error.code === 11000)
+      return res.status(409).json({ error: 'That room number already exists.' });
+    throw error;
+  }
+  res.status(201).json(safeRoom(room));
+});
+
+app.put('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const invalid = validateRoom(req.body);
+  if (invalid) return res.status(400).json({ error: invalid });
+  const room = await database.collection('rooms').findOne({ id: req.params.id });
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  const activeFilter = {
+    roomId: room.id,
+    status: { $in: ACTIVE_RESERVATION_STATUSES },
+    checkOut: { $gt: hotelToday() },
+  };
+  const active =
+    req.body.status === 'Maintenance' || req.body.status === 'Inactive'
+      ? await database.collection('reservations').findOne(activeFilter)
+      : await database.collection('reservations').findOne({
+          ...activeFilter,
+          guests: { $gt: Number(req.body.capacity) },
+        });
+  if ((req.body.status === 'Maintenance' || req.body.status === 'Inactive') && active) {
+    return res.status(409).json({ error: 'Reassign or cancel active reservations first.' });
+  }
+  if (req.body.status !== 'Maintenance' && req.body.status !== 'Inactive' && active) {
+    return res
+      .status(409)
+      .json({ error: 'Room capacity cannot be lower than an active reservation.' });
+  }
+  const updated = {
+    ...req.body,
+    id: room.id,
+    number: req.body.number.trim(),
+    price: Number(req.body.price),
+    capacity: Number(req.body.capacity),
+    createdAt: room.createdAt,
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    await database.collection('rooms').replaceOne({ id: room.id }, updated);
+  } catch (error) {
+    if (error.code === 11000)
+      return res.status(409).json({ error: 'That room number already exists.' });
+    throw error;
+  }
+  res.json(safeRoom(updated));
+});
+
+app.patch('/api/rooms/:id/status', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const { status } = req.body;
+  if (!['Available', 'Maintenance', 'Inactive'].includes(status)) {
+    return res.status(400).json({ error: 'Choose a valid room status.' });
+  }
+  const room = await database.collection('rooms').findOne({ id: req.params.id });
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  if (status === 'Maintenance' || status === 'Inactive') {
+    const active = await database.collection('reservations').findOne({
+      roomId: room.id,
+      status: { $in: ACTIVE_RESERVATION_STATUSES },
+      checkOut: { $gt: hotelToday() },
+    });
+    if (active)
+      return res.status(409).json({ error: 'Reassign or cancel active reservations first.' });
+  }
+  const updated = { ...room, status, updatedAt: new Date().toISOString() };
+  await database
+    .collection('rooms')
+    .updateOne({ id: room.id }, { $set: { status, updatedAt: updated.updatedAt } });
+  res.json(safeRoom(updated));
+});
+
+app.delete('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const room = await database.collection('rooms').findOne({ id: req.params.id });
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  const reservationCount = await database.collection('reservations').countDocuments({
+    roomId: room.id,
+  });
+  if (reservationCount > 0) {
+    return res.status(409).json({
+      error: 'Rooms with reservation history cannot be deleted. Set the room to Inactive instead.',
+    });
+  }
+  await database.collection('rooms').deleteOne({ id: room.id });
+  res.json({ message: 'Room deleted successfully.' });
+});
+
 app.get('/api/reservations', authenticate, async (req, res) => {
   const database = await connectToDatabase();
   const filter = req.auth.guestId ? { guestId: req.auth.guestId } : {};
@@ -878,6 +986,314 @@ app.patch('/api/reservations/:id/status', authenticate, async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Server is running' });
+});
+
+// Payments endpoints
+app.get('/api/payments', authenticate, async (req, res) => {
+  const database = await connectToDatabase();
+  let filter = {};
+  if (req.auth.guestId) {
+    const ownedReservations = await database
+      .collection('reservations')
+      .find({ guestId: req.auth.guestId }, { projection: { id: 1 } })
+      .toArray();
+    filter = { bookingId: { $in: ownedReservations.map((booking) => booking.id) } };
+  }
+  const payments = await database
+    .collection('payments')
+    .find(filter)
+    .project({ _id: 0 })
+    .sort({ date: -1 })
+    .toArray();
+  res.json(payments);
+});
+
+app.post('/api/payments', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const bookingId = req.body.bookingId;
+  const amount = Number(req.body.amount);
+  const method = typeof req.body.method === 'string' ? req.body.method.trim() : '';
+  if (
+    typeof bookingId !== 'string' ||
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    Math.round(amount * 100) !== amount * 100 ||
+    !method ||
+    method.length > 50 ||
+    method === 'Other'
+  ) {
+    return res
+      .status(400)
+      .json({ error: 'Provide a valid reservation, payment amount, and method.' });
+  }
+  const session = database.startSession();
+  const payment = {
+    id: `PAY-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+    bookingId,
+    amount: Math.round(amount * 100) / 100,
+    method,
+    date: hotelToday(),
+  };
+  try {
+    await session.withTransaction(async () => {
+      const booking = await database.collection('reservations').findOne({ id: bookingId }, { session });
+      if (!booking) throw requestError(404, 'Reservation not found.');
+      if (['Cancelled', 'Checked-out'].includes(booking.status)) {
+        throw requestError(409, 'Payments cannot be recorded for this reservation.');
+      }
+      await database
+        .collection('reservations')
+        .updateOne({ id: bookingId }, { $inc: { paymentVersion: 1 } }, { session });
+      const existing = await database.collection('payments').find({ bookingId }, { session }).toArray();
+      const paid = existing.reduce((sum, record) => sum + Number(record.amount), 0);
+      const balance = Math.round((stayTotal(booking) - paid) * 100) / 100;
+      if (amount > balance) throw requestError(409, 'Payment exceeds the remaining balance.');
+      await database.collection('payments').insertOne(payment, { session });
+    });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+  res.status(201).json(payment);
+});
+
+// Guests endpoints
+function validateGuestProfile(guest) {
+  if (
+    !guest ||
+    typeof guest.firstName !== 'string' ||
+    !/^[a-zA-Z\s\-']{2,50}$/.test(guest.firstName.trim()) ||
+    typeof guest.lastName !== 'string' ||
+    !/^[a-zA-Z\s\-']{2,50}$/.test(guest.lastName.trim()) ||
+    typeof guest.email !== 'string' ||
+    guest.email.length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guest.email.trim()) ||
+    typeof guest.phone !== 'string' ||
+    !/^\+63\s9\d{9}$/.test(guest.phone) ||
+    typeof guest.address !== 'string' ||
+    guest.address.length < 10 ||
+    guest.address.length > 200 ||
+    !/^[a-zA-Z0-9\s#\-']+$/.test(guest.address) ||
+    typeof guest.passport !== 'string' ||
+    !/^[a-zA-Z0-9\-]{5,20}$/.test(guest.passport)
+  ) {
+    return 'Please provide valid guest details.';
+  }
+  return null;
+}
+
+app.get('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const guests = await database.collection('guests').find({}).project({ _id: 0 }).toArray();
+  res.json(guests);
+});
+
+app.get('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const guest = await database
+    .collection('guests')
+    .findOne({ id: req.params.id }, { projection: { _id: 0 } });
+  if (!guest) return res.status(404).json({ error: 'Guest not found.' });
+  res.json(guest);
+});
+
+app.post('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const guest = req.body;
+  const error = validateGuestProfile(guest);
+  if (error) return res.status(400).json({ error });
+  const email = guest.email.trim().toLowerCase();
+  const [existingGuest, existingStaff] = await Promise.all([
+    database.collection('guests').findOne({ email }),
+    database.collection('staff').findOne({ email }),
+  ]);
+  if (existingGuest || existingStaff) {
+    return res.status(409).json({ error: 'Email already registered.' });
+  }
+  const saved = {
+    id: `G-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
+    firstName: guest.firstName.trim(),
+    lastName: guest.lastName.trim(),
+    email,
+    phone: guest.phone,
+    address: guest.address,
+    passport: guest.passport,
+    twoFactorEnabled: false,
+  };
+  await database.collection('guests').insertOne(saved);
+  res.status(201).json(saved);
+});
+
+app.put('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const error = validateGuestProfile(req.body);
+  if (error) return res.status(400).json({ error });
+  const { id } = req.params;
+  const email = req.body.email.trim().toLowerCase();
+  const [duplicateGuest, duplicateStaff] = await Promise.all([
+    database.collection('guests').findOne({ id: { $ne: id }, email }),
+    database.collection('staff').findOne({ email }),
+  ]);
+  if (duplicateGuest || duplicateStaff) {
+    return res.status(409).json({ error: 'Email already registered.' });
+  }
+  const updates = {
+    firstName: req.body.firstName.trim(),
+    lastName: req.body.lastName.trim(),
+    email,
+    phone: req.body.phone,
+    address: req.body.address,
+    passport: req.body.passport,
+  };
+  const result = await database.collection('guests').updateOne({ id }, { $set: updates });
+  if (result.matchedCount === 0) return res.status(404).json({ error: 'Guest not found.' });
+  res.json({ id, ...updates });
+});
+
+app.delete('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const { id } = req.params;
+  const reservationCount = await database.collection('reservations').countDocuments({ guestId: id });
+  if (reservationCount > 0) {
+    return res.status(409).json({ error: 'Guests with reservation history cannot be deleted.' });
+  }
+  const result = await database.collection('guests').deleteOne({ id });
+  if (result.deletedCount === 0) {
+    return res.status(404).json({ error: 'Guest not found.' });
+  }
+  await database.collection('accounts').deleteOne({ guestId: id });
+  res.json({ message: 'Guest deleted successfully' });
+});
+
+// Staff endpoints
+function generateTempPassword() {
+  return crypto.randomBytes(18).toString('base64url');
+}
+
+app.get('/api/staff', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
+  const database = await connectToDatabase();
+  const staff = await database
+    .collection('staff')
+    .find({})
+    .project({ _id: 0, salt: 0, digest: 0, password: 0 })
+    .toArray();
+  res.json(staff);
+});
+
+app.post('/api/staff', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const staff = req.body;
+  if (!staff.name || staff.name.length < 2 || staff.name.length > 50) {
+    return res.status(400).json({ error: 'Name must be between 2 and 50 characters' });
+  }
+  if (!/^[a-zA-Z\-'\s]+$/.test(staff.name)) {
+    return res.status(400).json({ error: 'Name can only contain letters, hyphens, apostrophes, and spaces' });
+  }
+  if (!staff.email || staff.email.length < 5 || staff.email.length > 254) {
+    return res.status(400).json({ error: 'Email must be between 5 and 254 characters' });
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(staff.email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+  if (!staff.phone) {
+    return res.status(400).json({ error: 'Phone number is required' });
+  }
+  const digits = staff.phone.replace(/\D/g, '');
+  const phoneDigits = digits.startsWith('639') ? digits.slice(3) : digits;
+  if (phoneDigits.length < 9) {
+    return res.status(400).json({ error: 'Phone number must be at least 9 digits' });
+  }
+  if (phoneDigits.length > 9) {
+    return res.status(400).json({ error: 'Phone number must be at most 9 digits' });
+  }
+
+  const email = staff.email.trim().toLowerCase();
+  const [existingGuest, existingStaff] = await Promise.all([
+    database.collection('guests').findOne({ email }),
+    database.collection('staff').findOne({ email }),
+  ]);
+  if (existingGuest || existingStaff) {
+    return res.status(409).json({ error: 'Email already registered' });
+  }
+
+  const tempPassword = generateTempPassword();
+  const salt = generateSalt();
+  const digest = await hashPassword(tempPassword, salt);
+
+  staff.salt = salt;
+  staff.digest = digest;
+  if (staff.twoFactorEnabled === undefined) {
+    staff.twoFactorEnabled = false;
+  }
+
+  await database.collection('staff').insertOne(staff);
+
+  try {
+    await sendStaffCredentialsEmail(staff, tempPassword);
+  } catch (emailError) {
+    console.error('Failed to send email, but staff was created:', emailError);
+  }
+
+  res.status(201).json({
+    message: 'Staff account created successfully',
+    staffId: staff.id,
+  });
+});
+
+app.put('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const { id } = req.params;
+  const staff = req.body;
+
+  const existingStaff = await database.collection('staff').findOne({
+    email: staff.email.trim().toLowerCase(),
+    id: { $ne: id },
+  });
+  const existingGuest = await database.collection('guests').findOne({
+    email: staff.email.trim().toLowerCase(),
+  });
+
+  if (existingStaff || existingGuest) {
+    return res.status(409).json({ error: 'Email already registered' });
+  }
+
+  const { _id, salt, digest, password, ...updateFields } = staff;
+
+  if (staff.password) {
+    const newSalt = generateSalt();
+    const newDigest = await hashPassword(staff.password, newSalt);
+    updateFields.salt = newSalt;
+    updateFields.digest = newDigest;
+  }
+
+  const result = await database.collection('staff').updateOne({ id }, { $set: updateFields });
+
+  if (result.matchedCount === 0) {
+    return res.status(404).json({ error: 'Staff member not found' });
+  }
+
+  res.json({ message: 'Staff account updated successfully' });
+});
+
+app.delete('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) => {
+  const database = await connectToDatabase();
+  const { id } = req.params;
+
+  const staff = await database.collection('staff').findOne({ id });
+  if (staff && staff.role === 'Admin') {
+    return res.status(403).json({ error: 'Cannot delete admin accounts' });
+  }
+
+  const result = await database.collection('staff').deleteOne({ id });
+
+  if (result.deletedCount === 0) {
+    return res.status(404).json({ error: 'Staff member not found' });
+  }
+
+  res.json({ message: 'Staff account deleted successfully' });
 });
 
 app.use((error, req, res, next) => {
