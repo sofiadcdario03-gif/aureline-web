@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { ArrowRight, Search, X } from 'lucide-react';
+import { ArrowRight, Search, X, Check } from 'lucide-react';
 import { nights, money, dateLabel } from '../../data.js';
 import { fullName } from '../../utils/formatters.js';
+import { roomInclusions } from '../../data/roomInclusions.js';
 import api from '../../services/api.js';
 import Field from '../ui/Field.jsx';
 import Modal from '../ui/Modal.jsx';
@@ -49,6 +50,19 @@ export default function ReserveForm({ item, query, onClose, ...c }) {
         }}
       >
         <img className="modal-room-image short" src={item.image} alt={`${item.type} room`} />
+        <div className="detail-inline">
+          <span>{item.capacity} guests</span>
+          <strong>{money(item.price)} / night</strong>
+        </div>
+        <p className="description-text">{item.description}</p>
+        <div className="amenities">
+          {roomInclusions[item.type].map((inclusion) => (
+            <span key={inclusion}>
+              <Check size={15} />
+              {inclusion}
+            </span>
+          ))}
+        </div>
         <Field label="Guest">
           {c.isGuest ? (
             <select

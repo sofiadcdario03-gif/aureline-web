@@ -241,10 +241,17 @@ export default function Profile(c) {
               <span>Address</span>
               <strong>{g?.address || 'Aureline Hotel'}</strong>
             </div>
-            <div>
-              <span>Account type</span>
-              <strong>{c.role}</strong>
-            </div>
+            {c.isGuest ? (
+              <div>
+                <span>ID / passport number</span>
+                <strong>{g?.passport || 'Not provided'}</strong>
+              </div>
+            ) : (
+              <div>
+                <span>Account type</span>
+                <strong>{c.role}</strong>
+              </div>
+            )}
           </div>
           <div
             style={{
