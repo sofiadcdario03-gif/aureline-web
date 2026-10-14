@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import { MongoClient } from 'mongodb';
-import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import {
@@ -11,8 +10,6 @@ import {
   verifyAccessToken,
   verifyPassword,
 } from './security.js';
-
-dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -37,7 +34,8 @@ let db;
 let clientPromise;
 
 if (!process.env.MONGO_URI) {
-  throw new Error('MONGO_URI must be configured');
+  console.error('MONGO_URI environment variable is not set');
+  // Don't throw in module scope - let it fail at runtime with better error message
 }
 
 const uri = process.env.MONGO_URI;
@@ -50,7 +48,9 @@ const options = {
   connectTimeoutMS: 10000,
 };
 
-if (process.env.NODE_ENV === 'development') {
+if (!uri) {
+  console.error('MONGO_URI is not configured');
+} else if (process.env.NODE_ENV === 'development') {
   if (!global._mongoClientPromise) {
     const client = new MongoClient(uri, options);
     global._mongoClientPromise = client.connect();
@@ -62,6 +62,9 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 async function connectToDatabase() {
+  if (!clientPromise) {
+    throw new Error('Database connection not initialized - MONGO_URI may be missing');
+  }
   const client = await clientPromise;
   if (!db) {
     db = client.db(process.env.MONGODB_DB_NAME || 'hotel-management');

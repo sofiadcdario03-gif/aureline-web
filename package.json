@@ -17,13 +17,10 @@
     "delete-db": "node deleteDatabase.js"
   },
   "dependencies": {
-    "@vercel/express": "^18.0.1",
-    "@vercel/node": "^23.0.1",
     "@vitejs/plugin-react": "latest",
     "axios": "latest",
     "bootstrap": "^5.3.3",
     "cors": "^2.8.6",
-    "dotenv": "^18.0.5",
     "express": "^5.2.1",
     "lucide-react": "latest",
     "mongodb": "^7.7.0",
