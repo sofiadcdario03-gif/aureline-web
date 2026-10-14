@@ -29,7 +29,11 @@ export default function Dashboard(c) {
     (b) => b.checkOut === day() && b.status === 'Checked-in',
   );
   const pending = visibleBookings.filter((b) => b.status === 'Pending');
-  const todaysReservations = visibleBookings.filter((b) => b.createdAt === day());
+  const todaysReservations = visibleBookings.filter((b) => {
+    if (!b.createdAt) return false;
+    const createdDate = b.createdAt.split('T')[0]; // Extract date part if timestamp is included
+    return createdDate === day();
+  });
   const rows =
     tab === 'Arrivals'
       ? arrivals
