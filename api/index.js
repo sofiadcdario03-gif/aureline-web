@@ -94,7 +94,7 @@ async function connectToDatabase() {
       db.collection('resetTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     ]).catch((err) => console.error('Index creation error (non-fatal):', err.message));
   }
-  return db;
+  return { db, client };
 }
 
 const ACTIVE_RESERVATION_STATUSES = ['Pending', 'Confirmed', 'Checked-in'];
@@ -134,7 +134,7 @@ async function authenticate(req, res, next) {
       return res.status(401).json({ error: 'Please sign in to continue.' });
     }
 
-    const database = await connectToDatabase();
+    const { db: database } = await connectToDatabase();
     const person = identity.guestId
       ? await database.collection('guests').findOne({ id: identity.guestId }, { projection: { _id: 0 } })
       : await database
@@ -212,7 +212,7 @@ function validateRoom(room) {
 
 async function loadAvailableRooms(query = {}) {
   try {
-    const database = await connectToDatabase();
+    const { db: database } = await connectToDatabase();
     const filter = { status: { $ne: 'Inactive' } };
     if (query.type && ['Single', 'Double', 'Deluxe', 'Suite'].includes(query.type)) {
       filter.type = query.type;
@@ -246,7 +246,7 @@ async function loadAvailableRooms(query = {}) {
 }
 
 async function checkStayAvailability(room, checkIn, checkOut, session, excludedId) {
-  const database = await connectToDatabase();
+  const { db: database } = await connectToDatabase();
   if (room.status !== 'Available') return false;
   return !(await database.collection('reservations').findOne(
     {
@@ -340,7 +340,7 @@ function cleanPerson(person) {
 }
 
 app.post('/api/auth/login', async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const password = req.body.password;
   if (!email || typeof password !== 'string') {
@@ -408,7 +408,7 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 });
 
 app.get('/api/profile', authenticate, async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const collection = req.auth.guestId ? 'guests' : 'staff';
   const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
   const profile = await database
@@ -547,7 +547,7 @@ async function sendOTPEmail(email, otp, purpose) {
 // OTP endpoints
 app.post('/api/otp/send', async (req, res) => {
   try {
-    const database = await connectToDatabase();
+    const { db: database, client } = await connectToDatabase();
     const { email, purpose } = req.body;
 
     if (!email) {
@@ -584,7 +584,7 @@ app.post('/api/otp/send', async (req, res) => {
 
 app.post('/api/otp/verify', async (req, res) => {
   try {
-    const database = await connectToDatabase();
+    const { db: database, client } = await connectToDatabase();
     const { email, otp } = req.body;
 
     if (!email || !otp) {
@@ -665,7 +665,7 @@ async function sendResetEmail(email, token) {
 
 app.post('/api/forgot-password', async (req, res) => {
   try {
-    const database = await connectToDatabase();
+    const { db: database, client } = await connectToDatabase();
     const { email } = req.body;
 
     if (!email) {
@@ -699,7 +699,7 @@ app.post('/api/forgot-password', async (req, res) => {
 
 app.post('/api/reset-password', async (req, res) => {
   try {
-    const database = await connectToDatabase();
+    const { db: database, client } = await connectToDatabase();
     const { token, password } = req.body;
 
     if (!token || !password) {
@@ -754,7 +754,7 @@ app.get('/api/rooms', async (req, res) => {
 });
 
 app.get('/api/rooms/:id', async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const room = await database.collection('rooms').findOne({ id: req.params.id });
   if (!room || room.status === 'Inactive')
     return res.status(404).json({ error: 'Room not found.' });
@@ -762,7 +762,7 @@ app.get('/api/rooms/:id', async (req, res) => {
 });
 
 app.post('/api/rooms', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const invalid = validateRoom(req.body);
   if (invalid) return res.status(400).json({ error: invalid });
   const room = {
@@ -785,7 +785,7 @@ app.post('/api/rooms', authenticate, allowRoles('Admin'), async (req, res) => {
 });
 
 app.put('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const invalid = validateRoom(req.body);
   if (invalid) return res.status(400).json({ error: invalid });
   const room = await database.collection('rooms').findOne({ id: req.params.id });
@@ -830,7 +830,7 @@ app.put('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) =>
 });
 
 app.patch('/api/rooms/:id/status', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const { status } = req.body;
   if (!['Available', 'Maintenance', 'Inactive'].includes(status)) {
     return res.status(400).json({ error: 'Choose a valid room status.' });
@@ -854,7 +854,7 @@ app.patch('/api/rooms/:id/status', authenticate, allowRoles('Admin'), async (req
 });
 
 app.delete('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const room = await database.collection('rooms').findOne({ id: req.params.id });
   if (!room) return res.status(404).json({ error: 'Room not found.' });
   const reservationCount = await database.collection('reservations').countDocuments({
@@ -871,7 +871,7 @@ app.delete('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res)
 
 app.get('/api/reservations', authenticate, async (req, res) => {
   try {
-    const database = await connectToDatabase();
+    const { db: database, client } = await connectToDatabase();
     const filter = req.auth.guestId ? { guestId: req.auth.guestId } : {};
     const reservations = await database
       .collection('reservations')
@@ -886,7 +886,7 @@ app.get('/api/reservations', authenticate, async (req, res) => {
 });
 
 app.post('/api/reservations', authenticate, async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const { roomId, checkIn, checkOut } = req.body;
   const guestId = req.auth.guestId || req.body.guestId;
   const guests = Number(req.body.guests);
@@ -911,7 +911,7 @@ app.post('/api/reservations', authenticate, async (req, res) => {
     status: 'Pending',
     createdAt: new Date().toISOString(),
   };
-  const session = database.startSession();
+  const session = client.startSession();
   try {
     await session.withTransaction(async () => {
       const room = await database.collection('rooms').findOne({ id: roomId }, { session });
@@ -943,7 +943,7 @@ app.post('/api/reservations', authenticate, async (req, res) => {
 });
 
 app.patch('/api/reservations/:id/status', authenticate, async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const { status } = req.body;
   const booking = await database.collection('reservations').findOne({ id: req.params.id });
   if (!booking) return res.status(404).json({ error: 'Reservation not found.' });
@@ -1019,7 +1019,7 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 });
 
 app.get('/api/profile', authenticate, async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const collection = req.auth.guestId ? 'guests' : 'staff';
   const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
   const profile = await database
@@ -1031,7 +1031,7 @@ app.get('/api/profile', authenticate, async (req, res) => {
 
 // Payments endpoints
 app.get('/api/payments', authenticate, async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   let filter = {};
   if (req.auth.guestId) {
     const ownedReservations = await database
@@ -1050,7 +1050,7 @@ app.get('/api/payments', authenticate, async (req, res) => {
 });
 
 app.post('/api/payments', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const bookingId = req.body.bookingId;
   const amount = Number(req.body.amount);
   const method = typeof req.body.method === 'string' ? req.body.method.trim() : '';
@@ -1067,7 +1067,7 @@ app.post('/api/payments', authenticate, allowRoles('Admin', 'Front Desk'), async
       .status(400)
       .json({ error: 'Provide a valid reservation, payment amount, and method.' });
   }
-  const session = database.startSession();
+  const session = client.startSession();
   const payment = {
     id: `PAY-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
     bookingId,
@@ -1126,13 +1126,13 @@ function validateGuestProfile(guest) {
 }
 
 app.get('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const guests = await database.collection('guests').find({}).project({ _id: 0 }).toArray();
   res.json(guests);
 });
 
 app.get('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const guest = await database
     .collection('guests')
     .findOne({ id: req.params.id }, { projection: { _id: 0 } });
@@ -1141,7 +1141,7 @@ app.get('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), asyn
 });
 
 app.post('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const guest = req.body;
   const error = validateGuestProfile(guest);
   if (error) return res.status(400).json({ error });
@@ -1168,7 +1168,7 @@ app.post('/api/guests', authenticate, allowRoles('Admin', 'Front Desk'), async (
 });
 
 app.put('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const error = validateGuestProfile(req.body);
   if (error) return res.status(400).json({ error });
   const { id } = req.params;
@@ -1194,7 +1194,7 @@ app.put('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), asyn
 });
 
 app.delete('/api/guests/:id', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const { id } = req.params;
   const reservationCount = await database.collection('reservations').countDocuments({ guestId: id });
   if (reservationCount > 0) {
@@ -1214,7 +1214,7 @@ function generateTempPassword() {
 }
 
 app.get('/api/staff', authenticate, allowRoles('Admin', 'Front Desk'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const staff = await database
     .collection('staff')
     .find({})
@@ -1224,7 +1224,7 @@ app.get('/api/staff', authenticate, allowRoles('Admin', 'Front Desk'), async (re
 });
 
 app.post('/api/staff', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const staff = req.body;
   if (!staff.name || staff.name.length < 2 || staff.name.length > 50) {
     return res.status(400).json({ error: 'Name must be between 2 and 50 characters' });
@@ -1285,7 +1285,7 @@ app.post('/api/staff', authenticate, allowRoles('Admin'), async (req, res) => {
 });
 
 app.put('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const { id } = req.params;
   const staff = req.body;
 
@@ -1320,7 +1320,7 @@ app.put('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) =>
 });
 
 app.delete('/api/staff/:id', authenticate, allowRoles('Admin'), async (req, res) => {
-  const database = await connectToDatabase();
+  const { db: database, client } = await connectToDatabase();
   const { id } = req.params;
 
   const staff = await database.collection('staff').findOne({ id });
