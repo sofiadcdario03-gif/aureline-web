@@ -16,6 +16,7 @@ export default function Profile(c) {
   const [editingPhone, setEditingPhone] = useState(false);
   const [phone, setPhone] = useState(staffAccount?.phone || '');
   const [phoneError, setPhoneError] = useState('');
+  const [phoneChecking, setPhoneChecking] = useState(false);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(c.session?.twoFactorEnabled || false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [passwordError2FA, setPasswordError2FA] = useState('');
@@ -49,6 +50,33 @@ export default function Profile(c) {
       setPhoneError('Phone number must be exactly 9 digits');
     } else {
       setPhoneError('');
+      // Real-time availability check
+      checkPhoneAvailability(formatted);
+    }
+  };
+
+  const checkPhoneAvailability = async (phoneNumber) => {
+    if (phoneNumber.length < 12) return; // Not a complete phone number yet
+    if (phoneNumber === staffAccount?.phone) {
+      setPhoneError('');
+      return;
+    }
+
+    setPhoneChecking(true);
+    try {
+      const currentId = c.session.guestId || c.session.staffId;
+      const response = await api.get('/auth/check-phone', {
+        params: { phone: phoneNumber, excludeId: currentId },
+      });
+      if (!response.data.available) {
+        setPhoneError('Phone number already registered');
+      } else {
+        setPhoneError('');
+      }
+    } catch (error) {
+      console.error('Error checking phone availability:', error);
+    } finally {
+      setPhoneChecking(false);
     }
   };
 

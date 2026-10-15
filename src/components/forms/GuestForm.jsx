@@ -10,6 +10,8 @@ export default function GuestForm({ item, onClose, ...c }) {
     item || { firstName: '', lastName: '', email: '', phone: '+63 9', address: '', passport: '' },
   );
   const [fieldErrors, setFieldErrors] = useState({});
+  const [checkingPhone, setCheckingPhone] = useState(false);
+  const [checkingPassport, setCheckingPassport] = useState(false);
 
   const validateField = (key, value) => {
     let error = '';
@@ -82,6 +84,64 @@ export default function GuestForm({ item, onClose, ...c }) {
 
     setData({ ...data, [key]: value });
     validateField(key, value);
+
+    // Real-time availability checks
+    if (key === 'phone' && value.length >= 12) {
+      checkPhoneAvailability(value);
+    }
+    if (key === 'passport' && value.length >= 5) {
+      checkPassportAvailability(value);
+    }
+  };
+
+  const checkPhoneAvailability = async (phoneNumber) => {
+    if (phoneNumber.length < 12) return; // Not a complete phone number yet
+    if (phoneNumber === item?.phone) {
+      setFieldErrors({ ...fieldErrors, phone: '' });
+      return;
+    }
+
+    setCheckingPhone(true);
+    try {
+      const currentId = item?.id || null;
+      const response = await api.get('/auth/check-phone', {
+        params: { phone: phoneNumber, excludeId: currentId },
+      });
+      if (!response.data.available) {
+        setFieldErrors({ ...fieldErrors, phone: 'Phone number already registered' });
+      } else {
+        setFieldErrors({ ...fieldErrors, phone: '' });
+      }
+    } catch (error) {
+      console.error('Error checking phone availability:', error);
+    } finally {
+      setCheckingPhone(false);
+    }
+  };
+
+  const checkPassportAvailability = async (passportNumber) => {
+    if (passportNumber.length < 5) return; // Not a complete passport number yet
+    if (passportNumber === item?.passport) {
+      setFieldErrors({ ...fieldErrors, passport: '' });
+      return;
+    }
+
+    setCheckingPassport(true);
+    try {
+      const currentId = item?.id || null;
+      const response = await api.get('/auth/check-passport', {
+        params: { passport: passportNumber, excludeId: currentId },
+      });
+      if (!response.data.available) {
+        setFieldErrors({ ...fieldErrors, passport: 'Passport number already registered' });
+      } else {
+        setFieldErrors({ ...fieldErrors, passport: '' });
+      }
+    } catch (error) {
+      console.error('Error checking passport availability:', error);
+    } finally {
+      setCheckingPassport(false);
+    }
   };
 
   const submit = async (e) => {

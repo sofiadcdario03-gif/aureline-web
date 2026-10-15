@@ -60,6 +60,8 @@ export default function StaffForm({ item, onClose, ...c }) {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [checkingPhone, setCheckingPhone] = useState(false);
+  const [checkingEmail, setCheckingEmail] = useState(false);
 
   // Update original status when item changes
   React.useEffect(() => {
@@ -90,6 +92,37 @@ export default function StaffForm({ item, onClose, ...c }) {
     // Live validation
     const error = validateEmail(limited);
     setErrors((prev) => ({ ...prev, email: error || null }));
+
+    // Real-time availability check
+    if (limited.length >= 5 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(limited)) {
+      checkEmailAvailability(limited);
+    }
+  };
+
+  const checkEmailAvailability = async (emailAddress) => {
+    if (emailAddress.length < 5) return; // Not a complete email yet
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailAddress)) return; // Invalid format
+    if (emailAddress.trim().toLowerCase() === item?.email?.trim().toLowerCase()) {
+      setErrors((prev) => ({ ...prev, email: null }));
+      return;
+    }
+
+    setCheckingEmail(true);
+    try {
+      const currentId = item?.id || null;
+      const response = await api.get('/auth/check-email', {
+        params: { email: emailAddress, excludeId: currentId },
+      });
+      if (!response.data.available) {
+        setErrors((prev) => ({ ...prev, email: 'Email already registered' }));
+      } else {
+        setErrors((prev) => ({ ...prev, email: null }));
+      }
+    } catch (error) {
+      console.error('Error checking email availability:', error);
+    } finally {
+      setCheckingEmail(false);
+    }
   };
 
   const handlePhoneChange = (e) => {
@@ -104,6 +137,40 @@ export default function StaffForm({ item, onClose, ...c }) {
     // Reconstruct phone number with +63 9 prefix
     const formatted = '+63 9' + limitedPhoneDigits;
     setData({ ...data, phone: formatted });
+
+    // Live validation
+    const error = validatePhone(formatted);
+    setErrors((prev) => ({ ...prev, phone: error || null }));
+
+    // Real-time availability check
+    if (formatted.length >= 12) {
+      checkPhoneAvailability(formatted);
+    }
+  };
+
+  const checkPhoneAvailability = async (phoneNumber) => {
+    if (phoneNumber.length < 12) return; // Not a complete phone number yet
+    if (phoneNumber === item?.phone) {
+      setErrors((prev) => ({ ...prev, phone: null }));
+      return;
+    }
+
+    setCheckingPhone(true);
+    try {
+      const currentId = item?.id || null;
+      const response = await api.get('/auth/check-phone', {
+        params: { phone: phoneNumber, excludeId: currentId },
+      });
+      if (!response.data.available) {
+        setErrors((prev) => ({ ...prev, phone: 'Phone number already registered' }));
+      } else {
+        setErrors((prev) => ({ ...prev, phone: null }));
+      }
+    } catch (error) {
+      console.error('Error checking phone availability:', error);
+    } finally {
+      setCheckingPhone(false);
+    }
   };
 
   const handleSubmit = async (e) => {

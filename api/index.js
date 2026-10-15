@@ -422,12 +422,15 @@ app.get('/api/auth/check-email', async (req, res) => {
   try {
     const { db: database } = await connectToDatabase();
     const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+    const excludeId = typeof req.query.excludeId === 'string' ? req.query.excludeId : null;
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Provide a valid email address.' });
     }
+    const guestFilter = excludeId ? { email, id: { $ne: excludeId } } : { email };
+    const staffFilter = excludeId ? { email, id: { $ne: excludeId } } : { email };
     const [guest, staff] = await Promise.all([
-      database.collection('guests').findOne({ email }, { projection: { _id: 1 } }),
-      database.collection('staff').findOne({ email }, { projection: { _id: 1 } }),
+      database.collection('guests').findOne(guestFilter, { projection: { _id: 1 } }),
+      database.collection('staff').findOne(staffFilter, { projection: { _id: 1 } }),
     ]);
     res.json({ available: !guest && !staff });
   } catch (error) {
@@ -440,12 +443,15 @@ app.get('/api/auth/check-phone', async (req, res) => {
   try {
     const { db: database } = await connectToDatabase();
     const phone = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
+    const excludeId = typeof req.query.excludeId === 'string' ? req.query.excludeId : null;
     if (!phone || !/^\+63\s9\d{9}$/.test(phone)) {
       return res.status(400).json({ error: 'Provide a valid phone number.' });
     }
+    const guestFilter = excludeId ? { phone, id: { $ne: excludeId } } : { phone };
+    const staffFilter = excludeId ? { phone, id: { $ne: excludeId } } : { phone };
     const [guest, staff] = await Promise.all([
-      database.collection('guests').findOne({ phone }, { projection: { _id: 1 } }),
-      database.collection('staff').findOne({ phone }, { projection: { _id: 1 } }),
+      database.collection('guests').findOne(guestFilter, { projection: { _id: 1 } }),
+      database.collection('staff').findOne(staffFilter, { projection: { _id: 1 } }),
     ]);
     res.json({ available: !guest && !staff });
   } catch (error) {
@@ -458,10 +464,12 @@ app.get('/api/auth/check-passport', async (req, res) => {
   try {
     const { db: database } = await connectToDatabase();
     const passport = typeof req.query.passport === 'string' ? req.query.passport.trim() : '';
+    const excludeId = typeof req.query.excludeId === 'string' ? req.query.excludeId : null;
     if (!passport || !/^[a-zA-Z0-9\-]{5,20}$/.test(passport)) {
       return res.status(400).json({ error: 'Provide a valid ID/passport number.' });
     }
-    const guest = await database.collection('guests').findOne({ passport }, { projection: { _id: 1 } });
+    const filter = excludeId ? { passport, id: { $ne: excludeId } } : { passport };
+    const guest = await database.collection('guests').findOne(filter, { projection: { _id: 1 } });
     res.json({ available: !guest });
   } catch (error) {
     console.error('Error checking passport:', error);
@@ -1222,15 +1230,14 @@ app.patch('/api/profile', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Phone number must contain exactly 9 digits.' });
     }
     const newPhone = `+63 9${phoneDigits}`;
-    // Check if phone is already taken by another user
-    const collection = req.auth.guestId ? 'guests' : 'staff';
-    const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
-    const existingPhone = await database.collection(collection).findOne({
-      phone: newPhone,
-      id: { $ne: req.auth.guestId || req.auth.staffId },
-    });
-    if (existingPhone) {
-      return res.status(409).json({ error: 'This phone number is already registered.' });
+    // Check if phone is already taken by another user (check both guests and staff)
+    const currentId = req.auth.guestId || req.auth.staffId;
+    const [existingGuestPhone, existingStaffPhone] = await Promise.all([
+      database.collection('guests').findOne({ phone: newPhone, id: { $ne: currentId } }),
+      database.collection('staff').findOne({ phone: newPhone, id: { $ne: currentId } }),
+    ]);
+    if (existingGuestPhone || existingStaffPhone) {
+      return res.status(409).json({ error: 'Phone number already registered.' });
     }
     updates.phone = newPhone;
   }
