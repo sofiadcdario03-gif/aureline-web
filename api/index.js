@@ -1080,6 +1080,91 @@ app.get('/api/profile', authenticate, async (req, res) => {
   res.json(profile);
 });
 
+app.patch('/api/profile', authenticate, async (req, res) => {
+  const { db: database, client } = await connectToDatabase();
+  const updates = {};
+  if (req.auth.guestId) {
+    const { firstName, lastName, address, passport } = req.body;
+    if (firstName !== undefined) {
+      if (typeof firstName !== 'string' || !/^[a-zA-Z\s\-']{2,50}$/.test(firstName.trim())) {
+        return res.status(400).json({ error: 'Enter a valid first name.' });
+      }
+      updates.firstName = firstName.trim();
+    }
+    if (lastName !== undefined) {
+      if (typeof lastName !== 'string' || !/^[a-zA-Z\s\-']{2,50}$/.test(lastName.trim())) {
+        return res.status(400).json({ error: 'Enter a valid last name.' });
+      }
+      updates.lastName = lastName.trim();
+    }
+    if (address !== undefined) {
+      if (
+        typeof address !== 'string' ||
+        address.length < 10 ||
+        address.length > 200 ||
+        !/^[a-zA-Z0-9\s#\-']+$/.test(address)
+      ) {
+        return res.status(400).json({ error: 'Enter a valid address.' });
+      }
+      updates.address = address;
+    }
+    if (passport !== undefined) {
+      if (typeof passport !== 'string' || !/^[a-zA-Z0-9\-]{5,20}$/.test(passport)) {
+        return res.status(400).json({ error: 'Enter a valid ID or passport number.' });
+      }
+      // Check if passport is already taken by another guest
+      const existingPassport = await database.collection('guests').findOne({
+        passport,
+        id: { $ne: req.auth.guestId },
+      });
+      if (existingPassport) {
+        return res.status(409).json({ error: 'This passport number is already registered.' });
+      }
+      updates.passport = passport;
+    }
+    if (req.body.email !== undefined) {
+      return res.status(400).json({ error: 'Email changes require verified account recovery.' });
+    }
+  }
+  if (typeof req.body.phone === 'string') {
+    const digits = req.body.phone.replace(/\D/g, '');
+    const phoneDigits = digits.startsWith('639') ? digits.slice(3) : digits;
+    if (phoneDigits.length !== 9) {
+      return res.status(400).json({ error: 'Phone number must contain exactly 9 digits.' });
+    }
+    const newPhone = `+63 9${phoneDigits}`;
+    // Check if phone is already taken by another user
+    const collection = req.auth.guestId ? 'guests' : 'staff';
+    const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
+    const existingPhone = await database.collection(collection).findOne({
+      phone: newPhone,
+      id: { $ne: req.auth.guestId || req.auth.staffId },
+    });
+    if (existingPhone) {
+      return res.status(409).json({ error: 'This phone number is already registered.' });
+    }
+    updates.phone = newPhone;
+  }
+  if (typeof req.body.twoFactorEnabled === 'boolean') {
+    updates.twoFactorEnabled = req.body.twoFactorEnabled;
+  }
+  if (!Object.keys(updates).length) {
+    return res.status(400).json({ error: 'No valid profile changes were provided.' });
+  }
+  const collection = req.auth.guestId ? 'guests' : 'staff';
+  const filter = req.auth.guestId ? { id: req.auth.guestId } : { id: req.auth.staffId };
+  await database.collection(collection).updateOne(filter, { $set: updates });
+  if (req.auth.guestId) {
+    const guest = await database.collection('guests').findOne(filter, { projection: { _id: 0 } });
+    return res.json({
+      message: 'Profile updated successfully.',
+      ...cleanPerson({ ...guest, role: 'Guest' }).profile,
+      twoFactorEnabled: guest.twoFactorEnabled === true,
+    });
+  }
+  res.json({ message: 'Profile updated successfully.', ...updates });
+});
+
 // Payments endpoints
 app.get('/api/payments', authenticate, async (req, res) => {
   const { db: database, client } = await connectToDatabase();
