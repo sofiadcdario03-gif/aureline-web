@@ -469,6 +469,95 @@ app.get('/api/auth/check-passport', async (req, res) => {
   }
 });
 
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { db: database, client } = await connectToDatabase();
+    const profile = req.body.profile;
+    const password = req.body.password;
+    const ticket = await verifyRegistrationTicket(database, req.body.verificationToken);
+    if (!ticket) {
+      return res.status(401).json({ error: 'Verify your email before creating an account.' });
+    }
+    if (
+      !profile ||
+      typeof profile !== 'object' ||
+      typeof password !== 'string' ||
+      password.length < 8
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'Provide valid guest details and a password of at least 8 characters.' });
+    }
+    const firstName = typeof profile.firstName === 'string' ? profile.firstName.trim() : '';
+    const lastName = typeof profile.lastName === 'string' ? profile.lastName.trim() : '';
+    const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
+    if (
+      !/^[a-zA-Z\s\-']{2,50}$/.test(firstName) ||
+      !/^[a-zA-Z\s\-']{2,50}$/.test(lastName) ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+      ticket.email !== email ||
+      typeof profile.phone !== 'string' ||
+      !/^\+63\s9\d{9}$/.test(profile.phone) ||
+      typeof profile.address !== 'string' ||
+      profile.address.length < 10 ||
+      profile.address.length > 200 ||
+      !/^[a-zA-Z0-9\s#\-']+$/.test(profile.address) ||
+      typeof profile.passport !== 'string' ||
+      !/^[a-zA-Z0-9\-]{5,20}$/.test(profile.passport)
+    ) {
+      return res.status(400).json({ error: 'Please provide valid guest profile details.' });
+    }
+
+    await deleteRegistrationTicket(database, req.body.verificationToken);
+    if (await database.collection('staff').findOne({ email })) {
+      return res.status(409).json({ error: 'Email already registered.' });
+    }
+    if (await database.collection('guests').findOne({ email })) {
+      return res.status(409).json({ error: 'Email already registered.' });
+    }
+    if (await database.collection('staff').findOne({ phone: profile.phone })) {
+      return res.status(409).json({ error: 'Phone number already registered.' });
+    }
+    if (await database.collection('guests').findOne({ phone: profile.phone })) {
+      return res.status(409).json({ error: 'Phone number already registered.' });
+    }
+    const guestId = `G-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+    const salt = generateSalt();
+    const digest = await hashPassword(password, salt);
+    const guest = {
+      id: guestId,
+      firstName,
+      lastName,
+      email,
+      phone: profile.phone,
+      address: profile.address,
+      passport: profile.passport,
+      twoFactorEnabled: false,
+    };
+    const session = client.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await database.collection('guests').insertOne(guest, { session });
+        await database.collection('accounts').insertOne({ guestId, salt, digest }, { session });
+      });
+    } catch (error) {
+      if (error.code === 11000) return res.status(409).json({ error: 'Email already registered.' });
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+    const user = cleanPerson({ ...guest, role: 'Guest' });
+    res.status(201).json({
+      token: createAccessToken({ role: 'Guest', guestId }, tokenSecret),
+      user,
+      guest,
+    });
+  } catch (error) {
+    console.error('Error in registration:', error);
+    res.status(500).json({ error: 'Registration failed', message: error.message });
+  }
+});
+
 // OTP storage (MongoDB-based for serverless persistence)
 async function storeOTP(db, email, otp, purpose) {
   const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute (60 seconds)
