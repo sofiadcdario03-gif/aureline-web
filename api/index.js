@@ -418,6 +418,57 @@ app.get('/api/profile', authenticate, async (req, res) => {
   res.json(profile);
 });
 
+app.get('/api/auth/check-email', async (req, res) => {
+  try {
+    const { db: database } = await connectToDatabase();
+    const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Provide a valid email address.' });
+    }
+    const [guest, staff] = await Promise.all([
+      database.collection('guests').findOne({ email }, { projection: { _id: 1 } }),
+      database.collection('staff').findOne({ email }, { projection: { _id: 1 } }),
+    ]);
+    res.json({ available: !guest && !staff });
+  } catch (error) {
+    console.error('Error checking email:', error);
+    res.status(500).json({ error: 'Failed to check email availability' });
+  }
+});
+
+app.get('/api/auth/check-phone', async (req, res) => {
+  try {
+    const { db: database } = await connectToDatabase();
+    const phone = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
+    if (!phone || !/^\+63\s9\d{9}$/.test(phone)) {
+      return res.status(400).json({ error: 'Provide a valid phone number.' });
+    }
+    const [guest, staff] = await Promise.all([
+      database.collection('guests').findOne({ phone }, { projection: { _id: 1 } }),
+      database.collection('staff').findOne({ phone }, { projection: { _id: 1 } }),
+    ]);
+    res.json({ available: !guest && !staff });
+  } catch (error) {
+    console.error('Error checking phone:', error);
+    res.status(500).json({ error: 'Failed to check phone availability' });
+  }
+});
+
+app.get('/api/auth/check-passport', async (req, res) => {
+  try {
+    const { db: database } = await connectToDatabase();
+    const passport = typeof req.query.passport === 'string' ? req.query.passport.trim() : '';
+    if (!passport || !/^[a-zA-Z0-9\-]{5,20}$/.test(passport)) {
+      return res.status(400).json({ error: 'Provide a valid ID/passport number.' });
+    }
+    const guest = await database.collection('guests').findOne({ passport }, { projection: { _id: 1 } });
+    res.json({ available: !guest });
+  } catch (error) {
+    console.error('Error checking passport:', error);
+    res.status(500).json({ error: 'Failed to check passport availability' });
+  }
+});
+
 // OTP storage (MongoDB-based for serverless persistence)
 async function storeOTP(db, email, otp, purpose) {
   const expiresAt = Date.now() + 1 * 60 * 1000; // 1 minute (60 seconds)
