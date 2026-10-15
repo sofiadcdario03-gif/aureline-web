@@ -123,38 +123,43 @@ function stayTotal(booking) {
 }
 
 async function authenticate(req, res, next) {
-  const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
-  const identity = verifyAccessToken(token, tokenSecret);
-  if (
-    !identity ||
-    Boolean(identity.guestId) === Boolean(identity.staffId) ||
-    !['Guest', 'Admin', 'Front Desk'].includes(identity.role)
-  ) {
-    return res.status(401).json({ error: 'Please sign in to continue.' });
-  }
+  try {
+    const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+    const identity = verifyAccessToken(token, tokenSecret);
+    if (
+      !identity ||
+      Boolean(identity.guestId) === Boolean(identity.staffId) ||
+      !['Guest', 'Admin', 'Front Desk'].includes(identity.role)
+    ) {
+      return res.status(401).json({ error: 'Please sign in to continue.' });
+    }
 
-  const database = await connectToDatabase();
-  const person = identity.guestId
-    ? await database.collection('guests').findOne({ id: identity.guestId }, { projection: { _id: 0 } })
-    : await database
-        .collection('staff')
-        .findOne(
-          { id: identity.staffId, status: 'Active' },
-          { projection: { _id: 0, salt: 0, digest: 0, password: 0 } },
-        );
-  if (
-    !person ||
-    (identity.guestId && identity.role !== 'Guest') ||
-    (identity.staffId && identity.role !== person.role)
-  ) {
-    return res.status(401).json({ error: 'Your session is no longer valid.' });
-  }
+    const database = await connectToDatabase();
+    const person = identity.guestId
+      ? await database.collection('guests').findOne({ id: identity.guestId }, { projection: { _id: 0 } })
+      : await database
+          .collection('staff')
+          .findOne(
+            { id: identity.staffId, status: 'Active' },
+            { projection: { _id: 0, salt: 0, digest: 0, password: 0 } },
+          );
+    if (
+      !person ||
+      (identity.guestId && identity.role !== 'Guest') ||
+      (identity.staffId && identity.role !== person.role)
+    ) {
+      return res.status(401).json({ error: 'Your session is no longer valid.' });
+    }
 
-  req.auth = {
-    ...identity,
-    name: identity.guestId ? `${person.firstName} ${person.lastName}` : person.name,
-  };
-  next();
+    req.auth = {
+      ...identity,
+      name: identity.guestId ? `${person.firstName} ${person.lastName}` : person.name,
+    };
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return res.status(500).json({ error: 'Authentication failed', message: error.message });
+  }
 }
 
 function allowRoles(...roles) {
