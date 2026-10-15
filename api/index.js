@@ -206,33 +206,38 @@ function validateRoom(room) {
 }
 
 async function loadAvailableRooms(query = {}) {
-  const database = await connectToDatabase();
-  const filter = { status: { $ne: 'Inactive' } };
-  if (query.type && ['Single', 'Double', 'Deluxe', 'Suite'].includes(query.type)) {
-    filter.type = query.type;
-  }
-  const capacity = Number(query.guests);
-  if (Number.isInteger(capacity) && capacity > 0) filter.capacity = { $gte: capacity };
-  let rooms = await database.collection('rooms').find(filter).toArray();
-  if (query.checkIn || query.checkOut) {
-    if (!validStayDates(query.checkIn, query.checkOut) || query.checkIn < hotelToday()) {
-      return { error: 'Choose valid future dates with check-out after check-in.' };
+  try {
+    const database = await connectToDatabase();
+    const filter = { status: { $ne: 'Inactive' } };
+    if (query.type && ['Single', 'Double', 'Deluxe', 'Suite'].includes(query.type)) {
+      filter.type = query.type;
     }
-    const roomIds = rooms.map((room) => room.id);
-    const conflicts = await database
-      .collection('reservations')
-      .find({
-        roomId: { $in: roomIds },
-        status: { $in: ACTIVE_RESERVATION_STATUSES },
-        checkIn: { $lt: query.checkOut },
-        checkOut: { $gt: query.checkIn },
-      })
-      .project({ roomId: 1 })
-      .toArray();
-    const unavailableIds = new Set(conflicts.map((booking) => booking.roomId));
-    rooms = rooms.filter((room) => room.status === 'Available' && !unavailableIds.has(room.id));
+    const capacity = Number(query.guests);
+    if (Number.isInteger(capacity) && capacity > 0) filter.capacity = { $gte: capacity };
+    let rooms = await database.collection('rooms').find(filter).toArray();
+    if (query.checkIn || query.checkOut) {
+      if (!validStayDates(query.checkIn, query.checkOut) || query.checkIn < hotelToday()) {
+        return { error: 'Choose valid future dates with check-out after check-in.' };
+      }
+      const roomIds = rooms.map((room) => room.id);
+      const conflicts = await database
+        .collection('reservations')
+        .find({
+          roomId: { $in: roomIds },
+          status: { $in: ACTIVE_RESERVATION_STATUSES },
+          checkIn: { $lt: query.checkOut },
+          checkOut: { $gt: query.checkIn },
+        })
+        .project({ roomId: 1 })
+        .toArray();
+      const unavailableIds = new Set(conflicts.map((booking) => booking.roomId));
+      rooms = rooms.filter((room) => room.status === 'Available' && !unavailableIds.has(room.id));
+    }
+    return { rooms: rooms.map(safeRoom) };
+  } catch (error) {
+    console.error('Error in loadAvailableRooms:', error);
+    return { error: error.message || 'Failed to load available rooms' };
   }
-  return { rooms: rooms.map(safeRoom) };
 }
 
 async function checkStayAvailability(room, checkIn, checkOut, session, excludedId) {
@@ -728,14 +733,19 @@ app.post('/api/reset-password', async (req, res) => {
 });
 
 app.get('/api/rooms', async (req, res) => {
-  const result = await loadAvailableRooms({
-    type: req.query.type,
-    guests: req.query.guests,
-    checkIn: req.query.checkIn,
-    checkOut: req.query.checkOut,
-  });
-  if (result.error) return res.status(400).json({ error: result.error });
-  res.json(result.rooms);
+  try {
+    const result = await loadAvailableRooms({
+      type: req.query.type,
+      guests: req.query.guests,
+      checkIn: req.query.checkIn,
+      checkOut: req.query.checkOut,
+    });
+    if (result.error) return res.status(400).json({ error: result.error });
+    res.json(result.rooms);
+  } catch (error) {
+    console.error('Error loading rooms:', error);
+    res.status(500).json({ error: 'Failed to load rooms', message: error.message });
+  }
 });
 
 app.get('/api/rooms/:id', async (req, res) => {
@@ -855,14 +865,19 @@ app.delete('/api/rooms/:id', authenticate, allowRoles('Admin'), async (req, res)
 });
 
 app.get('/api/reservations', authenticate, async (req, res) => {
-  const database = await connectToDatabase();
-  const filter = req.auth.guestId ? { guestId: req.auth.guestId } : {};
-  const reservations = await database
-    .collection('reservations')
-    .find(filter)
-    .sort({ createdAt: -1 })
-    .toArray();
-  res.json(reservations.map(safeReservation));
+  try {
+    const database = await connectToDatabase();
+    const filter = req.auth.guestId ? { guestId: req.auth.guestId } : {};
+    const reservations = await database
+      .collection('reservations')
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json(reservations.map(safeReservation));
+  } catch (error) {
+    console.error('Error loading reservations:', error);
+    res.status(500).json({ error: 'Failed to load reservations', message: error.message });
+  }
 });
 
 app.post('/api/reservations', authenticate, async (req, res) => {
